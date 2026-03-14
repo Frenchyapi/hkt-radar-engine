@@ -43,6 +43,63 @@ function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
     return R * c; // Distance in meters
 }
 
+// Common Airline ICAO to IATA Mapping for Phuket (VTSP)
+const airlineCodes = {
+  // Thai Domestic & Regional
+  "THA": "TG", // Thai Airways
+  "BKP": "PG", // Bangkok Airways
+  "AIQ": "FD", // Thai AirAsia
+  "AAW": "QZ", // Indonesia AirAsia
+  "AXM": "AK", // AirAsia
+  "TLM": "SL", // Thai Lion Air
+  "VWA": "VZ", // Thai VietJet Air
+  "NKS": "DD", // Nok Air
+  
+  // International
+  "KLM": "KL", // KLM
+  "AXB": "IX", // Air India Express
+  "AIC": "AI", // Air India
+  "VJC": "VJ", // VietJet Air
+  "BAW": "BA", // British Airways
+  "CPA": "CX", // Cathay Pacific
+  "SIA": "SQ", // Singapore Airlines
+  "IGO": "6E", // IndiGo
+  "UAE": "EK", // Emirates
+  "QTR": "QR", // Qatar Airways
+  "AFL": "SU", // Aeroflot
+  "ETD": "EY", // Etihad
+  "MAS": "MH", // Malaysia Airlines
+  "JST": "JQ", // Jetstar
+  "QFA": "QF", // Qantas
+  "CSN": "CZ", // China Southern
+  "CCA": "CA", // Air China
+  "CES": "MU", // China Eastern
+  "CAL": "CI", // China Airlines
+  "EVA": "BR", // EVA Air
+  "KAL": "KE", // Korean Air
+  "AAR": "OZ", // Asiana
+  "SVA": "SV", // Saudia
+  "OMA": "WY", // Oman Air
+  "GFA": "GF", // Gulf Air
+  "RJA": "RJ", // Royal Jordanian
+  "ELY": "LY"  // El Al
+};
+
+/**
+ * Converts a 3-letter ICAO callsign prefix to a 2-letter IATA prefix.
+ * Example: KLM809 -> KL809
+ */
+function convertICAOtoIATA(callsign) {
+    if (!callsign || callsign.length < 3) return callsign;
+    const icao = callsign.substring(0, 3).toUpperCase();
+    const flightNumber = callsign.substring(3);
+    
+    if (airlineCodes[icao]) {
+        return airlineCodes[icao] + flightNumber;
+    }
+    return callsign; // Return original if not found
+}
+
 /**
  * Polls Flightradar24 for ADS-B data and processes calculations.
  */
@@ -154,9 +211,9 @@ setInterval(pollRadarData, POLLING_INTERVAL);
 // ===================================
 
 app.get('/api/flights/eta', (req, res) => {
-    // Requirements stated: returns a clean JSON array with ONLY Callsign and ETA
+    // Requirements stated: returns a clean JSON array with ONLY Callsign (IATA format) and ETA
     const slimData = flightDataCache.map(f => ({
-        Callsign: f.Callsign,
+        Callsign: convertICAOtoIATA(f.Callsign),
         ETA: f.ETA
     }));
     res.json(slimData);
@@ -167,9 +224,9 @@ app.get('/api/external/flights', (req, res) => {
     if (apiKey !== 'hkt-apron-static-key') {
         return res.status(401).json({ error: 'Unauthorized: Invalid or missing x-api-key' });
     }
-    // External API also returns ONLY Callsign and ETA
+    // External API also returns ONLY Callsign (IATA format) and ETA
     const slimData = flightDataCache.map(f => ({
-        Callsign: f.Callsign,
+        Callsign: convertICAOtoIATA(f.Callsign),
         ETA: f.ETA
     }));
     res.json(slimData);
