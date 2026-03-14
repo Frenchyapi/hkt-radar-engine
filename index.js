@@ -12,35 +12,63 @@ app.use(express.json());
 // In-memory Cache
 let flightDataCache = [];
 let lastFetchTime = null;
-const POLLING_INTERVAL = 60 * 1000; // 60 seconds (longer interval to avoid rate limiting)
+const POLLING_INTERVAL = 60 * 1000; // 60 seconds
 
 /**
- * Polls Flightradar24 for flights heading to Phuket (HKT)
- * and retrieves their ACTUAL ETA from FR24's flight detail API.
+ * Multiple scanning zones to beat the 1500-flight cap.
+ * Each zone returns up to 1500 flights independently.
+ * We merge all results and deduplicate by flight ID.
+ * Format: fetchFromRadar(north, west, south, east)
+ */
+const SCAN_ZONES = [
+    // Zone 1: Close range - Thailand & neighbors (catches all nearby HKT flights)
+    { name: 'SEA-Close', north: 20.0, west: 90.0, south: 0.0, east: 110.0 },
+    // Zone 2: India, Sri Lanka, Middle East  
+    { name: 'West', north: 35.0, west: 45.0, south: 0.0, east: 90.0 },
+    // Zone 3: China, Korea, Japan
+    { name: 'North-East', north: 45.0, west: 100.0, south: 20.0, east: 145.0 },
+    // Zone 4: Indonesia, Australia
+    { name: 'South', north: 0.0, west: 95.0, south: -25.0, east: 140.0 },
+];
+
+/**
+ * Polls Flightradar24 using MULTI-ZONE scanning for maximum HKT coverage.
  */
 async function pollRadarData() {
     try {
-        console.log(`[${new Date().toISOString()}] Fetching flights from Flightradar24...`);
+        console.log(`[${new Date().toISOString()}] Multi-zone scan starting...`);
         const now = new Date();
         
-        // Step 1: Get all flights in a ~4-hour radius around Phuket
-        // Note: Larger boxes hit the 1500 cap, causing FR24 to randomly drop nearby HKT flights
-        // This 4-hour box reliably captures 17-20 HKT-bound flights (~1400 total in box)
-        const allFlights = await fetchFromRadar(30.0, 70.0, -15.0, 120.0);
+        // Step 1: Fetch flights from ALL zones and merge by flight ID
+        const flightMap = new Map(); // id -> flight object (dedup)
         
-        if (!allFlights || allFlights.length === 0) {
-            console.log(`[${now.toISOString()}] No flights found.`);
-            flightDataCache = [];
-            lastFetchTime = now;
-            return;
+        for (const zone of SCAN_ZONES) {
+            try {
+                const flights = await fetchFromRadar(zone.north, zone.west, zone.south, zone.east);
+                let zoneHkt = 0;
+                for (const f of flights) {
+                    if (!flightMap.has(f.id)) {
+                        flightMap.set(f.id, f);
+                    }
+                    if (f.destination && f.destination.toUpperCase() === 'HKT') zoneHkt++;
+                }
+                console.log(`  📡 ${zone.name}: ${flights.length} flights (${zoneHkt} HKT)`);
+                // Small delay between zone fetches
+                await new Promise(resolve => setTimeout(resolve, 500));
+            } catch (err) {
+                console.log(`  ⚠️ ${zone.name} failed: ${err.message}`);
+            }
         }
         
-        // Step 2: Filter only flights with destination HKT (Phuket)
+        const allFlights = Array.from(flightMap.values());
+        console.log(`  📊 Total unique flights: ${allFlights.length}`);
+        
+        // Step 2: Filter only flights with destination HKT
         const hktFlights = allFlights.filter(f => 
             f.destination && f.destination.toUpperCase() === 'HKT'
         );
         
-        console.log(`[${now.toISOString()}] Found ${hktFlights.length} HKT-bound flights out of ${allFlights.length} total.`);
+        console.log(`  ✈️ HKT-bound: ${hktFlights.length}`);
         
         if (hktFlights.length === 0) {
             flightDataCache = [];
@@ -48,16 +76,13 @@ async function pollRadarData() {
             return;
         }
         
-        // Step 3: For each HKT flight, fetch the REAL FR24 ETA using fetchFlight
+        // Step 3: Fetch REAL FR24 ETA for each HKT flight
         const detailedFlights = [];
         
         for (const flight of hktFlights) {
             try {
                 const detail = await fetchFlight(flight.id);
-                
                 const callsign = flight.callsign || flight.flight || flight.registration || 'UNKNOWN';
-                
-                // Use FR24's actual arrival time (real > estimated > scheduled)
                 const eta = detail.arrival || detail.scheduledArrival || null;
                 
                 detailedFlights.push({
@@ -65,12 +90,9 @@ async function pollRadarData() {
                     ETA: eta
                 });
                 
-                // Small delay between requests to avoid rate limiting
                 await new Promise(resolve => setTimeout(resolve, 200));
-                
             } catch (err) {
-                // If fetchFlight fails for one flight, skip it
-                console.log(`  ⚠️ Could not fetch detail for ${flight.callsign || flight.id}: ${err.message}`);
+                console.log(`  ⚠️ Detail failed for ${flight.callsign || flight.id}: ${err.message}`);
             }
         }
         
@@ -80,7 +102,7 @@ async function pollRadarData() {
             lastFetchTime = now;
         }
         
-        console.log(`[${now.toISOString()}] Cache updated. Tracking ${detailedFlights.length} HKT-bound aircraft with FR24 ETA.`);
+        console.log(`[${now.toISOString()}] ✅ Cache updated: ${detailedFlights.length} HKT flights with FR24 ETA.\n`);
 
     } catch (error) {
         console.error(`[${new Date().toISOString()}] Error: ${error.message}`);
@@ -119,8 +141,8 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v2.0 — Precision Mode`);
-    console.log(`📡 Polling FR24 every 60 seconds (HKT-only)`);
+    console.log(`🛰️  HKT-Radar-Engine v3.0 — Multi-Zone Scan`);
+    console.log(`📡 ${SCAN_ZONES.length} zones × 1500 = up to ${SCAN_ZONES.length * 1500} flights scanned`);
     console.log(`🌐 Port ${PORT}`);
     console.log(`👉 http://localhost:${PORT}/api/flights/eta`);
     console.log(`=============================================\n`);
