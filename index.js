@@ -9,6 +9,14 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// Helper: Get current time in ISO format with +07:00 offset
+function getHktTime(date = new Date()) {
+    // Add 7 hours to UTC to get HKT, then format
+    const hkt = new Date(date.getTime() + (7 * 60 * 60 * 1000));
+    return hkt.toISOString().replace(/\.\d{3}Z$/, "+07:00");
+}
+
+
 // In-memory Cache & State
 let flightDataCache = [];
 let lastFetchTime = null;
@@ -96,17 +104,33 @@ async function pollRadarData() {
                     const eta = detail.arrival || detail.scheduledArrival || null;
                     
                     // Track this flight for disappearance detection (reset missCount since we see it)
-                    trackedArrivals.set(flight.id, { callsign, iata, lastETA: eta, missCount: 0 });
+                    trackedArrivals.set(flight.id, { 
+                        callsign, 
+                        iata, 
+                        lastETA: eta, 
+                        lastAIBT: detail.arrival, // Store potential AIBT
+                        missCount: 0 
+                    });
                     
                     // Report ETA normally (still in air)
-                    responseData.set(flight.id, { Callsign: callsign, IATA: iata, ETA: eta });
+                    responseData.set(flight.id, { 
+                        Callsign: callsign, 
+                        IATA: iata, 
+                        ETA: eta,
+                        AOBT: detail.departure // Origin AOBT (for completeness)
+                    });
                     
                 } else if (origin === "HKT") {
                     // --- DEPARTURE LOGIC ---
                     if (!flight.isOnGround) {
                         // First time take-off detection
                         const detail = await fetchFlight(flight.id);
-                        responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATD: detail.departure });
+                        responseData.set(flight.id, { 
+                            Callsign: callsign, 
+                            IATA: iata, 
+                            ATD: getHktTime(), // Use Current Server Time when wheels up
+                            AOBT: detail.departure // Keep FR24 gate departure time as AOBT
+                        });
                         reportedDepartedFlights.set(flight.id, Date.now());
                         console.log(`  🛫 ${callsign} (HKT Departure) TOOK OFF. Reporting ATD.`);
                     }
@@ -135,10 +159,15 @@ async function pollRadarData() {
                 
                 if (info.missCount >= MISS_THRESHOLD && timeDiff >= 0 && timeDiff < ATA_WINDOW_MS) {
                     // Missing for 3+ polls AND ETA has PASSED (within last 15 min) -> confirmed landing
-                    responseData.set(id, { Callsign: info.callsign, IATA: info.iata, ATA: info.lastETA });
+                    responseData.set(id, { 
+                        Callsign: info.callsign, 
+                        IATA: info.iata, 
+                        ATA: info.lastETA,
+                        AIBT: info.lastAIBT || null // Use AIBT if we caught it in the last poll
+                    });
                     reportedLandedFlights.set(id, Date.now());
                     trackedArrivals.delete(id);
-                    console.log(`  🛬 ${info.callsign} confirmed landed (missing ${info.missCount} polls, ETA: ${info.lastETA}). Reporting ATA.`);
+                    console.log(`  🛬 ${info.callsign} confirmed landed. Reporting ATA.`);
                 } else if (timeDiff >= ATA_WINDOW_MS) {
                     // ETA was long ago but we never caught it -> clean up
                     trackedArrivals.delete(id);
@@ -226,7 +255,7 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v3.6 — Smart ATA (3-poll confirm) + ATD Single-Shot`);
+    console.log(`🛰️  HKT-Radar-Engine v3.7 — Takeoff ATD + AIBT/AOBT Support`);
     console.log(`📡 ${SCAN_ZONES.length} zones × 1500 = up to ${SCAN_ZONES.length * 1500} flights scanned`);
     console.log(`🌐 Port ${PORT}`);
     console.log(`👉 http://localhost:${PORT}/api/flights/eta`);
