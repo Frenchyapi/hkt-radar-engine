@@ -68,99 +68,62 @@ async function pollRadarData() {
         const allFlights = Array.from(flightMap.values());
         console.log(`  📊 Total unique flights: ${allFlights.length}`);
         
-        // Step 2: Filter flights with destination HKT or origin HKT
-        const hktArrivals = allFlights.filter(f => 
-            f.destination && f.destination.toUpperCase() === 'HKT'
-        );
-        const hktDepartures = allFlights.filter(f => 
-            f.origin && f.origin.toUpperCase() === 'HKT'
-        );
+        // Step 3: Process flights of interest (Origin or Destination = HKT)
+        const responseData = new Map();
         
-        console.log(`  ✈️ HKT-bound: ${hktArrivals.length} | HKT-departing: ${hktDepartures.length}`);
-        
-        if (hktArrivals.length === 0 && hktDepartures.length === 0) {
-            flightDataCache = [];
-            lastFetchTime = now;
-            return;
-        }
-        
-        // Step 3: Fetch REAL FR24 ETA/ATA for each HKT arrival
-        const responseData = new Map(); // Using Map to ensure each ID is unique in the response
-        
-        for (const flight of hktArrivals) {
-            // Early exit: If already reported as landed or departed, skip entirely
-            if (reportedLandedFlights.has(flight.id) || reportedDepartedFlights.has(flight.id)) continue;
+        for (const flight of allFlights) {
+            const origin = (flight.origin || "").toUpperCase();
+            const destination = (flight.destination || "").toUpperCase();
             
-            try {
-                const detail = await fetchFlight(flight.id);
-                const callsign = flight.callsign || flight.flight || flight.registration || 'UNKNOWN';
-                
-                // ATA Logic: If flight is on ground, it has landed at HKT
-                if (flight.isOnGround) {
-                    // One last check just in case it was added to reported during this scan (unlikely but safe)
-                    if (!reportedLandedFlights.has(flight.id)) {
-                        // First time reporting this landing
-                        responseData.set(flight.id, {
-                            Callsign: typeof callsign === 'string' ? callsign.trim() : 'UNKNOWN',
-                            IATA: flight.flight || 'UNKNOWN',
-                            ATA: detail.arrival
-                        });
-                        reportedLandedFlights.set(flight.id, Date.now());
-                        console.log(`  🛬 ${callsign} LANDED. Reporting ATA.`);
-                    }
-                } else {
-                    // Flight is still in the air, report ETA
-                    const eta = detail.arrival || detail.scheduledArrival || null;
-                    responseData.set(flight.id, {
-                        Callsign: typeof callsign === 'string' ? callsign.trim() : 'UNKNOWN',
-                        IATA: flight.flight || 'UNKNOWN',
-                        ETA: eta
-                    });
-                }
-                
-                await new Promise(resolve => setTimeout(resolve, 200));
-            } catch (err) {
-                console.log(`  ⚠️ Detail failed for ${flight.callsign || flight.id}: ${err.message}`);
-            }
-        }
-        
-        // Step 4: Fetch ATD for each HKT departure
-        for (const flight of hktDepartures) {
-            // Early exit: If already reported, skip entirely
+            // Only care about Phuket (HKT)
+            if (origin !== "HKT" && destination !== "HKT") continue;
+            
+            // Early exit: If this flight instance already reported its final event (ATA/ATD), ignore it
             if (reportedLandedFlights.has(flight.id) || reportedDepartedFlights.has(flight.id)) continue;
 
             try {
                 const callsign = flight.callsign || flight.flight || flight.registration || 'UNKNOWN';
-                
-                // ATD Logic: If flight has taken off (not on ground) and origin is HKT
-                if (!flight.isOnGround) {
-                    if (!reportedDepartedFlights.has(flight.id)) {
-                        const detail = await fetchFlight(flight.id);
-                        // First time reporting this departure
-                        responseData.set(flight.id, {
-                            Callsign: typeof callsign === 'string' ? callsign.trim() : 'UNKNOWN',
-                            IATA: flight.flight || 'UNKNOWN',
-                            ATD: detail.departure
-                        });
-                        reportedDepartedFlights.set(flight.id, Date.now());
-                        console.log(`  🛫 ${callsign} DEPARTED HKT. Reporting ATD.`);
+                const iata = flight.flight || 'UNKNOWN';
+                const onGround = flight.isOnGround;
+
+                if (destination === "HKT") {
+                    // --- ARRIVAL LOGIC ---
+                    const detail = await fetchFlight(flight.id);
+                    if (onGround) {
+                        // First time landing detection
+                        responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: detail.arrival });
+                        reportedLandedFlights.set(flight.id, Date.now());
+                        console.log(`  🛬 ${callsign} (HKT Arrival) LANDED. Reporting ATA.`);
+                    } else {
+                        // Still in air, reporting ETA normally
+                        responseData.set(flight.id, { Callsign: callsign, IATA: iata, ETA: detail.arrival || detail.scheduledArrival });
                     }
+                } else if (origin === "HKT") {
+                    // --- DEPARTURE LOGIC ---
+                    if (!onGround) {
+                        // First time take-off detection (we only report once it's in the air)
+                        const detail = await fetchFlight(flight.id);
+                        responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATD: detail.departure });
+                        reportedDepartedFlights.set(flight.id, Date.now());
+                        console.log(`  🛫 ${callsign} (HKT Departure) TOOK OFF. Reporting ATD.`);
+                    }
+                    // If still on ground at HKT, we don't add to responseData (silent until departure)
                 }
-                // If still on ground at HKT (not departed yet), we don't report anything (not in ETA list)
-                
+
+                // Small delay between detailed fetches
                 await new Promise(resolve => setTimeout(resolve, 200));
             } catch (err) {
-                console.log(`  ⚠️ Detail failed for ${flight.callsign || flight.id}: ${err.message}`);
+                console.log(`  ⚠️ Error processing ${flight.callsign || flight.id}: ${err.message}`);
             }
         }
         
-        // Update cache from response map
+        // Update global cache
         flightDataCache = Array.from(responseData.values());
         if (flightDataCache.length > 0) {
             lastFetchTime = now;
         }
         
-        console.log(`[${now.toISOString()}] ✅ Cache updated: ${flightDataCache.length} HKT flights.\n`);
+        console.log(`[${now.toISOString()}] ✅ Cache updated: ${flightDataCache.length} Phuket flights.\n`);
 
     } catch (error) {
         console.error(`[${new Date().toISOString()}] Error: ${error.message}`);
@@ -218,7 +181,7 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v3.3 — Multi-Zone Scan + ATA/ATD (Fixed Dups)`);
+    console.log(`🛰️  HKT-Radar-Engine v3.4 — Unified Phuket Loop + ATA/ATD Single-Shot`);
     console.log(`📡 ${SCAN_ZONES.length} zones × 1500 = up to ${SCAN_ZONES.length * 1500} flights scanned`);
     console.log(`🌐 Port ${PORT}`);
     console.log(`👉 http://localhost:${PORT}/api/flights/eta`);
