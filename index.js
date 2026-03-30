@@ -85,33 +85,33 @@ async function pollRadarData() {
         }
         
         // Step 3: Fetch REAL FR24 ETA/ATA for each HKT arrival
-        const detailedFlights = [];
+        const responseData = new Map(); // Using Map to ensure each ID is unique in the response
         
         for (const flight of hktArrivals) {
+            // Early exit: If already reported as landed or departed, skip entirely
+            if (reportedLandedFlights.has(flight.id) || reportedDepartedFlights.has(flight.id)) continue;
+            
             try {
                 const detail = await fetchFlight(flight.id);
                 const callsign = flight.callsign || flight.flight || flight.registration || 'UNKNOWN';
                 
                 // ATA Logic: If flight is on ground, it has landed at HKT
                 if (flight.isOnGround) {
+                    // One last check just in case it was added to reported during this scan (unlikely but safe)
                     if (!reportedLandedFlights.has(flight.id)) {
                         // First time reporting this landing
-                        detailedFlights.push({
+                        responseData.set(flight.id, {
                             Callsign: typeof callsign === 'string' ? callsign.trim() : 'UNKNOWN',
                             IATA: flight.flight || 'UNKNOWN',
                             ATA: detail.arrival
                         });
                         reportedLandedFlights.set(flight.id, Date.now());
-                        console.log(`  🛬 ${callsign} LANDED. Reporting ATA and clearing from next polls.`);
-                    } else {
-                        // Already reported ATA, skip this flight entirely
-                        console.log(`  🧹 ${callsign} already reported ATA. Skipping.`);
-                        continue; 
+                        console.log(`  🛬 ${callsign} LANDED. Reporting ATA.`);
                     }
                 } else {
                     // Flight is still in the air, report ETA
                     const eta = detail.arrival || detail.scheduledArrival || null;
-                    detailedFlights.push({
+                    responseData.set(flight.id, {
                         Callsign: typeof callsign === 'string' ? callsign.trim() : 'UNKNOWN',
                         IATA: flight.flight || 'UNKNOWN',
                         ETA: eta
@@ -126,6 +126,9 @@ async function pollRadarData() {
         
         // Step 4: Fetch ATD for each HKT departure
         for (const flight of hktDepartures) {
+            // Early exit: If already reported, skip entirely
+            if (reportedLandedFlights.has(flight.id) || reportedDepartedFlights.has(flight.id)) continue;
+
             try {
                 const callsign = flight.callsign || flight.flight || flight.registration || 'UNKNOWN';
                 
@@ -134,19 +137,16 @@ async function pollRadarData() {
                     if (!reportedDepartedFlights.has(flight.id)) {
                         const detail = await fetchFlight(flight.id);
                         // First time reporting this departure
-                        detailedFlights.push({
+                        responseData.set(flight.id, {
                             Callsign: typeof callsign === 'string' ? callsign.trim() : 'UNKNOWN',
                             IATA: flight.flight || 'UNKNOWN',
                             ATD: detail.departure
                         });
                         reportedDepartedFlights.set(flight.id, Date.now());
                         console.log(`  🛫 ${callsign} DEPARTED HKT. Reporting ATD.`);
-                    } else {
-                        // Already reported ATD, skip
-                        console.log(`  🧹 ${callsign} already reported ATD. Skipping.`);
                     }
                 }
-                // If still on ground at HKT (not departed yet), we don't report anything
+                // If still on ground at HKT (not departed yet), we don't report anything (not in ETA list)
                 
                 await new Promise(resolve => setTimeout(resolve, 200));
             } catch (err) {
@@ -154,13 +154,13 @@ async function pollRadarData() {
             }
         }
         
-        // Update cache
-        flightDataCache = detailedFlights;
-        if (detailedFlights.length > 0) {
+        // Update cache from response map
+        flightDataCache = Array.from(responseData.values());
+        if (flightDataCache.length > 0) {
             lastFetchTime = now;
         }
         
-        console.log(`[${now.toISOString()}] ✅ Cache updated: ${detailedFlights.length} HKT flights.\n`);
+        console.log(`[${now.toISOString()}] ✅ Cache updated: ${flightDataCache.length} HKT flights.\n`);
 
     } catch (error) {
         console.error(`[${new Date().toISOString()}] Error: ${error.message}`);
@@ -218,7 +218,7 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v3.2 — Multi-Zone Scan + ATA/ATD + IATA`);
+    console.log(`🛰️  HKT-Radar-Engine v3.3 — Multi-Zone Scan + ATA/ATD (Fixed Dups)`);
     console.log(`📡 ${SCAN_ZONES.length} zones × 1500 = up to ${SCAN_ZONES.length * 1500} flights scanned`);
     console.log(`🌐 Port ${PORT}`);
     console.log(`👉 http://localhost:${PORT}/api/flights/eta`);
