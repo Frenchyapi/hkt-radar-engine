@@ -18,7 +18,7 @@ const trackedArrivals = new Map(); // Track HKT-bound flights across polls: id -
 const POLLING_INTERVAL = 60 * 1000; // 60 seconds
 const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
 const REPORT_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
-const ATA_WINDOW_MS = 30 * 60 * 1000; // 30 minutes - max gap between ETA and now to consider it a real landing
+const ATA_WINDOW_MS = 15 * 60 * 1000; // 15 minutes - max gap between ETA and now to consider it a real landing
 
 /**
  * Multiple scanning zones to beat the 1500-flight cap.
