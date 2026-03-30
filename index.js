@@ -9,8 +9,10 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// Helper: Get current time in ISO format with +07:00 offset
-function getHktTime(date = new Date()) {
+// Helper: Convert any date/string to ISO format with +07:00 offset
+function getHktTime(input = new Date()) {
+    const date = typeof input === 'string' ? new Date(input) : input;
+    if (isNaN(date.getTime())) return null;
     // Add 7 hours to UTC to get HKT, then format
     const hkt = new Date(date.getTime() + (7 * 60 * 60 * 1000));
     return hkt.toISOString().replace(/\.\d{3}Z$/, "+07:00");
@@ -112,12 +114,11 @@ async function pollRadarData() {
                         missCount: 0 
                     });
                     
-                    // Report ETA normally (still in air)
+                    // Still in air, reporting ETA normally
                     responseData.set(flight.id, { 
                         Callsign: callsign, 
                         IATA: iata, 
-                        ETA: eta,
-                        AOBT: detail.departure // Origin AOBT (for completeness)
+                        ETA: getHktTime(eta)
                     });
                     
                 } else if (origin === "HKT") {
@@ -129,7 +130,7 @@ async function pollRadarData() {
                             Callsign: callsign, 
                             IATA: iata, 
                             ATD: getHktTime(), // Use Current Server Time when wheels up
-                            AOBT: detail.departure // Keep FR24 gate departure time as AOBT
+                            AOBT: getHktTime(detail.departure) // HKT AOBT +07:00
                         });
                         reportedDepartedFlights.set(flight.id, Date.now());
                         console.log(`  🛫 ${callsign} (HKT Departure) TOOK OFF. Reporting ATD.`);
@@ -162,8 +163,8 @@ async function pollRadarData() {
                     responseData.set(id, { 
                         Callsign: info.callsign, 
                         IATA: info.iata, 
-                        ATA: info.lastETA,
-                        AIBT: info.lastAIBT || null // Use AIBT if we caught it in the last poll
+                        ATA: getHktTime(info.lastETA),
+                        AIBT: getHktTime(info.lastAIBT) // HKT AIBT +07:00
                     });
                     reportedLandedFlights.set(id, Date.now());
                     trackedArrivals.delete(id);
@@ -255,7 +256,7 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v3.7 — Takeoff ATD + AIBT/AOBT Support`);
+    console.log(`🛰️  HKT-Radar-Engine v3.7.1 — Strict +07:00 AIBT/AOBT Logic`);
     console.log(`📡 ${SCAN_ZONES.length} zones × 1500 = up to ${SCAN_ZONES.length * 1500} flights scanned`);
     console.log(`🌐 Port ${PORT}`);
     console.log(`👉 http://localhost:${PORT}/api/flights/eta`);
