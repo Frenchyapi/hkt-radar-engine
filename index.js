@@ -98,6 +98,7 @@ async function pollRadarData() {
                         // First time reporting this landing
                         detailedFlights.push({
                             Callsign: typeof callsign === 'string' ? callsign.trim() : 'UNKNOWN',
+                            IATA: flight.flight || 'UNKNOWN',
                             ATA: detail.arrival
                         });
                         reportedLandedFlights.set(flight.id, Date.now());
@@ -112,6 +113,7 @@ async function pollRadarData() {
                     const eta = detail.arrival || detail.scheduledArrival || null;
                     detailedFlights.push({
                         Callsign: typeof callsign === 'string' ? callsign.trim() : 'UNKNOWN',
+                        IATA: flight.flight || 'UNKNOWN',
                         ETA: eta
                     });
                 }
@@ -134,6 +136,7 @@ async function pollRadarData() {
                         // First time reporting this departure
                         detailedFlights.push({
                             Callsign: typeof callsign === 'string' ? callsign.trim() : 'UNKNOWN',
+                            IATA: flight.flight || 'UNKNOWN',
                             ATD: detail.departure
                         });
                         reportedDepartedFlights.set(flight.id, Date.now());
@@ -215,7 +218,7 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v3.1 — Multi-Zone Scan + ATA/ATD`);
+    console.log(`🛰️  HKT-Radar-Engine v3.2 — Multi-Zone Scan + ATA/ATD + IATA`);
     console.log(`📡 ${SCAN_ZONES.length} zones × 1500 = up to ${SCAN_ZONES.length * 1500} flights scanned`);
     console.log(`🌐 Port ${PORT}`);
     console.log(`👉 http://localhost:${PORT}/api/flights/eta`);
