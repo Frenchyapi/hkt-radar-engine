@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { fetchFromRadar, fetchFlight } = require('flightradar24-client');
+const { getStandInfo } = require('./hkt_stands');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -36,7 +37,7 @@ const POLLING_INTERVAL = 60 * 1000; // 60 seconds
 const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
 const REPORT_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
 const MISS_THRESHOLD = 3; 
-
+const STAND_RADIUS_METERS = 35; // Radius to consider aircraft "At Gate"
 // Multi-zone setup. Note: Only HKT-Ground has onGround: true to restrict massive global ground vehicle polling
 const SCAN_ZONES = [
     { name: 'SEA-Close', north: 20.0, west: 90.0, south: 0.0, east: 110.0, options: {} },
@@ -124,23 +125,38 @@ async function pollRadarData() {
                     } 
                     
                     if (info.state === 'LANDED') {
-                        // Check Ground Speed for Gate Arrival
-                        if (flight.speed <= 2) {
+                        // GEOFENCING: Check if aircraft is at a stand
+                        const standInfo = getStandInfo(flight.latitude, flight.longitude);
+                        
+                        if (flight.speed <= 2 && standInfo.distance < STAND_RADIUS_METERS) {
+                            // Candidate for AIBT (Stop at Stand)
+                            if (!info.potentialAibtTime) {
+                                info.potentialAibtTime = getHktTime(); // Record first zero at stand
+                            }
+                            
                             info.zeroSpeedCount++;
                             if (info.zeroSpeedCount >= 2) {
-                                // 2 consecutive polls of ~0 speed -> Parked at Gate!
-                                const aibt = getHktTime();
-                                responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata, AIBT: aibt });
+                                // Confirmed Parked at Stand!
+                                const aibt = info.potentialAibtTime;
+                                responseData.set(flight.id, { 
+                                    Callsign: callsign, 
+                                    IATA: iata, 
+                                    ATA: info.ata, 
+                                    AIBT: aibt,
+                                    Stand: standInfo.stand
+                                });
                                 reportedArrivals.set(flight.id, Date.now());
                                 trackedArrivals.delete(flight.id);
-                                console.log(`  🛑 ${callsign} PARKED AT GATE. Reporting AIBT: ${aibt}`);
+                                console.log(`  🛑 ${callsign} PARKED at Stand ${standInfo.stand}. Reporting AIBT: ${aibt}`);
                             } else {
-                                // Just stopped or slow taxi, waiting to confirm
-                                responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata });
+                                responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata, Stand: standInfo.stand });
                             }
                         } else {
-                            // Taxiing
-                            info.zeroSpeedCount = 0;
+                            // Still taxiing or stopped NOT at a stand (Traffic Wait)
+                            if (flight.speed > 2) {
+                                info.potentialAibtTime = null; // Movement reset
+                                info.zeroSpeedCount = 0;
+                            }
                             responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata });
                         }
                     }
@@ -157,26 +173,29 @@ async function pollRadarData() {
                     const info = trackedDepartures.get(flight.id);
 
                     if (info.state === 'PARKED') {
+                        const standInfo = getStandInfo(flight.latitude, flight.longitude);
                         if (flight.isOnGround && flight.speed > 2) {
-                            // Plane was ~0 speed, now moving > 2 kts -> PUSHBACK / TAXI START!
+                            // Plane was at stand, now moving -> PUSHBACK!
                             info.state = 'TAXIING';
                             info.aobt = getHktTime();
-                            console.log(`  🚜 ${callsign} PUSHBACK. Reporting AOBT: ${info.aobt}`);
-                            responseData.set(flight.id, { Callsign: callsign, IATA: iata, AOBT: info.aobt });
+                            console.log(`  🚜 ${callsign} PUSHBACK from Stand ${standInfo.stand}. Reporting AOBT: ${info.aobt}`);
+                            responseData.set(flight.id, { Callsign: callsign, IATA: iata, AOBT: info.aobt, Stand: standInfo.stand });
                         } else if (!flight.isOnGround) {
+                            // Fallback if missed ground phase
                             if (flight.altitude < 10000) {
-                                // Took off recently, missed the taxi phase (e.g. ground coverage gap)
                                 info.state = 'AIRBORNE';
                                 const atd = getHktTime();
-                                responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATD: atd, AOBT: atd }); // fallback setup
+                                responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATD: atd, AOBT: atd });
                                 reportedDepartures.set(flight.id, Date.now());
                                 trackedDepartures.delete(flight.id);
                                 console.log(`  🛫 ${callsign} TOOK OFF (missed taxi). Reporting ATD: ${atd}`);
                             } else {
-                                // Took off a long time ago (high altitude on first sight). Ignore and mark as reported
                                 reportedDepartures.set(flight.id, Date.now());
                                 trackedDepartures.delete(flight.id);
                             }
+                        } else {
+                            // Still parked at stand
+                            responseData.set(flight.id, { Callsign: callsign, IATA: iata, Stand: standInfo.stand });
                         }
                     } 
                     
@@ -282,7 +301,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v5.0 — Real Ground Speed Engine`);
+    console.log(`🛰️  HKT-Radar-Engine v5.5 — Geofencing Stand tracking`);
     console.log(`🌐 Port ${PORT} | Active Zones: ${SCAN_ZONES.length}`);
+    console.log(`📍 Loaded Stand Coordinates: ${STAND_RADIUS_METERS}m radius`);
     console.log(`=============================================\n`);
 });
