@@ -129,14 +129,13 @@ async function pollRadarData() {
                         const standInfo = getStandInfo(flight.latitude, flight.longitude);
                         
                         if (flight.speed <= 2 && standInfo.distance < STAND_RADIUS_METERS) {
-                            // Candidate for AIBT (Stop at Stand)
                             if (!info.potentialAibtTime) {
-                                info.potentialAibtTime = getHktTime(); // Record first zero at stand
+                                info.potentialAibtTime = getHktTime();
                             }
-                            
                             info.zeroSpeedCount++;
+                            
                             if (info.zeroSpeedCount >= 2) {
-                                // Confirmed Parked at Stand!
+                                // Confirmed Parked at Stand! (Report Once)
                                 const aibt = info.potentialAibtTime;
                                 responseData.set(flight.id, { 
                                     Callsign: callsign, 
@@ -149,7 +148,8 @@ async function pollRadarData() {
                                 trackedArrivals.delete(flight.id);
                                 console.log(`  🛑 ${callsign} PARKED at Stand ${standInfo.stand}. Reporting AIBT: ${aibt}`);
                             } else {
-                                responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata, Stand: standInfo.stand });
+                                // Candidate for AIBT but not confirmed yet (Hide Stand for now)
+                                responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata });
                             }
                         } else {
                             // Still taxiing or stopped NOT at a stand (Traffic Wait)
@@ -194,8 +194,8 @@ async function pollRadarData() {
                                 trackedDepartures.delete(flight.id);
                             }
                         } else {
-                            // Still parked at stand
-                            responseData.set(flight.id, { Callsign: callsign, IATA: iata, Stand: standInfo.stand });
+                            // Still parked at stand (Wait silently, show nothing in API to avoid clutter)
+                            // responseData.set(flight.id, { Callsign: callsign, IATA: iata, Stand: standInfo.stand });
                         }
                     } 
                     
@@ -209,7 +209,7 @@ async function pollRadarData() {
                             trackedDepartures.delete(flight.id);
                             console.log(`  🛫 ${callsign} TOOK OFF. Reporting ATD: ${atd}`);
                         } else {
-                            // Still taxiing
+                            // Still taxiing to runway (Show AOBT without Stand to keep it clean)
                             responseData.set(flight.id, { Callsign: callsign, IATA: iata, AOBT: info.aobt });
                         }
                     }
@@ -301,8 +301,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v5.5 — Geofencing Stand tracking`);
+    console.log(`🛰️  HKT-Radar-Engine v5.7 — Clean API Output`);
     console.log(`🌐 Port ${PORT} | Active Zones: ${SCAN_ZONES.length}`);
-    console.log(`📍 Loaded Stand Coordinates: ${STAND_RADIUS_METERS}m radius`);
+    console.log(`📍 Stand Filter: 15m radius (Event-only display)`);
     console.log(`=============================================\n`);
 });
