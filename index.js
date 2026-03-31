@@ -13,65 +13,59 @@ app.use(express.json());
 function getHktTime(input = new Date()) {
     const date = typeof input === 'string' ? new Date(input) : input;
     if (isNaN(date.getTime())) return null;
-    // Add 7 hours to UTC to get HKT, then format
     const hkt = new Date(date.getTime() + (7 * 60 * 60 * 1000));
     return hkt.toISOString().replace(/\.\d{3}Z$/, "+07:00");
 }
 
-
-// In-memory Cache & State
 let flightDataCache = [];
 let lastFetchTime = null;
-const reportedLandedFlights = new Map(); // Store flight IDs that have already reported ATA
-const reportedDepartedFlights = new Map(); // Store flight IDs that have already reported ATD
-const trackedArrivals = new Map(); // Track HKT-bound flights across polls: id -> { callsign, iata, lastETA, missCount }
+
+// Track reported final events to prevent duplicate processing
+const reportedArrivals = new Map(); // Store flight IDs that perfectly completed (AIBT fired)
+const reportedDepartures = new Map(); // Store flight IDs that completely finished (ATD fired)
+
+// trackedArrivals: tracks flights from air -> land -> gate/apron
+// id -> { callsign, iata, state: 'AIRBORNE'|'LANDED', ata: null, lastETA: null, zeroSpeedCount: 0, missCount: 0 }
+const trackedArrivals = new Map(); 
+
+// trackedDepartures: tracks flights from gate/apron -> taxi -> air
+// id -> { callsign, iata, state: 'PARKED'|'TAXIING', aobt: null }
+const trackedDepartures = new Map();
+
 const POLLING_INTERVAL = 60 * 1000; // 60 seconds
 const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
 const REPORT_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
-const ATA_WINDOW_MS = 15 * 60 * 1000; // 15 minutes - max gap between ETA and now to consider it a real landing
-const MISS_THRESHOLD = 3; // Must be missing from radar for 3 consecutive polls (~3 min) before confirming landing
+const MISS_THRESHOLD = 3; 
 
-/**
- * Multiple scanning zones to beat the 1500-flight cap.
- * Each zone returns up to 1500 flights independently.
- * We merge all results and deduplicate by flight ID.
- * Format: fetchFromRadar(north, west, south, east)
- */
+// Multi-zone setup. Note: Only HKT-Ground has onGround: true to restrict massive global ground vehicle polling
 const SCAN_ZONES = [
-    // Zone 1: Close range - Thailand & neighbors (catches all nearby HKT flights)
-    { name: 'SEA-Close', north: 20.0, west: 90.0, south: 0.0, east: 110.0 },
-    // Zone 2: India, Sri Lanka, Middle East  
-    { name: 'West', north: 35.0, west: 45.0, south: 0.0, east: 90.0 },
-    // Zone 3: China, Korea, Japan
-    { name: 'North-East', north: 45.0, west: 100.0, south: 20.0, east: 145.0 },
-    // Zone 4: Indonesia, Australia
-    { name: 'South', north: 0.0, west: 95.0, south: -25.0, east: 140.0 },
+    { name: 'SEA-Close', north: 20.0, west: 90.0, south: 0.0, east: 110.0, options: {} },
+    { name: 'West', north: 35.0, west: 45.0, south: 0.0, east: 90.0, options: {} },
+    { name: 'North-East', north: 45.0, west: 100.0, south: 20.0, east: 145.0, options: {} },
+    { name: 'South', north: 0.0, west: 95.0, south: -25.0, east: 140.0, options: {} },
+    // DEDICATED GROUND ZONE FOR HKT (Captures parked & taxiing traffic)
+    { name: 'HKT-Ground', north: 8.150, west: 98.250, south: 8.080, east: 98.350, options: { onGround: true, inactive: true } },
 ];
 
-/**
- * Polls Flightradar24 using MULTI-ZONE scanning for maximum HKT coverage.
- */
 async function pollRadarData() {
     try {
-        console.log(`[${new Date().toISOString()}] Multi-zone scan starting...`);
+        console.log(`\n[${new Date().toISOString()}] Ground-Speed Engine scan starting...`);
         const now = new Date();
         
-        // Step 1: Fetch flights from ALL zones and merge by flight ID
-        const flightMap = new Map(); // id -> flight object (dedup)
+        const flightMap = new Map();
         
         for (const zone of SCAN_ZONES) {
             try {
-                const flights = await fetchFromRadar(zone.north, zone.west, zone.south, zone.east);
+                const flights = await fetchFromRadar(zone.north, zone.west, zone.south, zone.east, null, zone.options);
                 let zoneHkt = 0;
                 for (const f of flights) {
-                    if (!flightMap.has(f.id)) {
-                        flightMap.set(f.id, f);
+                    if (!flightMap.has(f.id) || zone.name === 'HKT-Ground') {
+                        flightMap.set(f.id, f); // HKT-Ground will overwrite air zone copies, providing better ground data
                     }
                     if (f.destination && f.destination.toUpperCase() === 'HKT') zoneHkt++;
                     if (f.origin && f.origin.toUpperCase() === 'HKT') zoneHkt++;
                 }
                 console.log(`  📡 ${zone.name}: ${flights.length} flights (${zoneHkt} HKT)`);
-                // Small delay between zone fetches
                 await new Promise(resolve => setTimeout(resolve, 500));
             } catch (err) {
                 console.log(`  ⚠️ ${zone.name} failed: ${err.message}`);
@@ -79,128 +73,169 @@ async function pollRadarData() {
         }
         
         const allFlights = Array.from(flightMap.values());
-        console.log(`  📊 Total unique flights: ${allFlights.length}`);
+        console.log(`  📊 Total unique tracking objects: ${allFlights.length}`);
         
-        // Step 3: Process flights of interest (Origin or Destination = HKT)
         const responseData = new Map();
-        const seenArrivalIds = new Set(); // Track which arrival IDs we see in THIS poll
+        const seenArrivalIds = new Set();
         
         for (const flight of allFlights) {
             const origin = (flight.origin || "").toUpperCase();
             const destination = (flight.destination || "").toUpperCase();
             
-            // Only care about Phuket (HKT)
             if (origin !== "HKT" && destination !== "HKT") continue;
             
-            // Early exit: If this flight instance already reported its final event (ATA/ATD), ignore it
-            if (reportedLandedFlights.has(flight.id) || reportedDepartedFlights.has(flight.id)) continue;
+            // If already fully reported logic-wise, skip it totally
+            if (reportedArrivals.has(flight.id) || reportedDepartures.has(flight.id)) continue;
 
             try {
                 const callsign = flight.callsign || flight.flight || flight.registration || 'UNKNOWN';
                 const iata = flight.flight || 'UNKNOWN';
 
                 if (destination === "HKT") {
-                    // --- ARRIVAL LOGIC ---
+                    // ======================================
+                    // ARRIVAL LOGIC (ETA -> ATA -> AIBT)
+                    // ======================================
                     seenArrivalIds.add(flight.id);
-                    const detail = await fetchFlight(flight.id);
-                    const eta = detail.arrival || detail.scheduledArrival || null;
                     
-                    // Track this flight for disappearance detection (reset missCount since we see it)
-                    trackedArrivals.set(flight.id, { 
-                        callsign, 
-                        iata, 
-                        lastETA: eta, 
-                        missCount: 0 
-                    });
-                    
-                    // Still in air, reporting ETA normally
-                    responseData.set(flight.id, { 
-                        Callsign: callsign, 
-                        IATA: iata, 
-                        ETA: getHktTime(eta)
-                    });
-                    
-                } else if (origin === "HKT") {
-                    // --- DEPARTURE LOGIC ---
-                    if (!flight.isOnGround) {
-                        // First time take-off detection
-                        const detail = await fetchFlight(flight.id);
-                        responseData.set(flight.id, { 
-                            Callsign: callsign, 
-                            IATA: iata, 
-                            ATD: getHktTime(), // Use Current Server Time when wheels up
-                            AOBT: getHktTime(detail.departure) // HKT AOBT +07:00
+                    if (!trackedArrivals.has(flight.id)) {
+                        trackedArrivals.set(flight.id, { 
+                            callsign, iata, state: 'AIRBORNE', ata: null, lastETA: null, zeroSpeedCount: 0, missCount: 0 
                         });
-                        reportedDepartedFlights.set(flight.id, Date.now());
-                        console.log(`  🛫 ${callsign} (HKT Departure) TOOK OFF. Reporting ATD.`);
+                    }
+                    
+                    const info = trackedArrivals.get(flight.id);
+                    info.missCount = 0; // Reset missing
+
+                    if (info.state === 'AIRBORNE') {
+                        // Check Touchdown
+                        if (flight.isOnGround || flight.altitude < 100) {
+                            info.state = 'LANDED';
+                            info.ata = getHktTime();
+                            console.log(`  🛬 ${callsign} TOUCHDOWN. Reporting ATA: ${info.ata}`);
+                        } else {
+                            // Fetch ETA details if airborne
+                            try {
+                                const detail = await fetchFlight(flight.id);
+                                info.lastETA = detail.arrival || detail.scheduledArrival || null;
+                            } catch(e) {}
+                            await new Promise(r => setTimeout(r, 200));
+                            responseData.set(flight.id, { Callsign: callsign, IATA: iata, ETA: getHktTime(info.lastETA) });
+                        }
+                    } 
+                    
+                    if (info.state === 'LANDED') {
+                        // Check Ground Speed for Gate Arrival
+                        if (flight.speed <= 2) {
+                            info.zeroSpeedCount++;
+                            if (info.zeroSpeedCount >= 2) {
+                                // 2 consecutive polls of ~0 speed -> Parked at Gate!
+                                const aibt = getHktTime();
+                                responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata, AIBT: aibt });
+                                reportedArrivals.set(flight.id, Date.now());
+                                trackedArrivals.delete(flight.id);
+                                console.log(`  🛑 ${callsign} PARKED AT GATE. Reporting AIBT: ${aibt}`);
+                            } else {
+                                // Just stopped or slow taxi, waiting to confirm
+                                responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata });
+                            }
+                        } else {
+                            // Taxiing
+                            info.zeroSpeedCount = 0;
+                            responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata });
+                        }
+                    }
+
+                } else if (origin === "HKT") {
+                    // ======================================
+                    // DEPARTURE LOGIC (AOBT -> ATD)
+                    // ======================================
+                    if (!trackedDepartures.has(flight.id)) {
+                        // Defaults to PARKED based on origin alone 
+                        trackedDepartures.set(flight.id, { callsign, iata, state: 'PARKED', aobt: null });
+                    }
+                    
+                    const info = trackedDepartures.get(flight.id);
+
+                    if (info.state === 'PARKED') {
+                        if (flight.isOnGround && flight.speed > 2) {
+                            // Plane was ~0 speed, now moving > 2 kts -> PUSHBACK / TAXI START!
+                            info.state = 'TAXIING';
+                            info.aobt = getHktTime();
+                            console.log(`  🚜 ${callsign} PUSHBACK. Reporting AOBT: ${info.aobt}`);
+                            responseData.set(flight.id, { Callsign: callsign, IATA: iata, AOBT: info.aobt });
+                        } else if (!flight.isOnGround) {
+                            if (flight.altitude < 10000) {
+                                // Took off recently, missed the taxi phase (e.g. ground coverage gap)
+                                info.state = 'AIRBORNE';
+                                const atd = getHktTime();
+                                responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATD: atd, AOBT: atd }); // fallback setup
+                                reportedDepartures.set(flight.id, Date.now());
+                                trackedDepartures.delete(flight.id);
+                                console.log(`  🛫 ${callsign} TOOK OFF (missed taxi). Reporting ATD: ${atd}`);
+                            } else {
+                                // Took off a long time ago (high altitude on first sight). Ignore and mark as reported
+                                reportedDepartures.set(flight.id, Date.now());
+                                trackedDepartures.delete(flight.id);
+                            }
+                        }
+                    } 
+                    
+                    else if (info.state === 'TAXIING') {
+                        if (!flight.isOnGround) {
+                            // Took off!
+                            info.state = 'AIRBORNE';
+                            const atd = getHktTime();
+                            responseData.set(flight.id, { Callsign: callsign, IATA: iata, AOBT: info.aobt, ATD: atd });
+                            reportedDepartures.set(flight.id, Date.now());
+                            trackedDepartures.delete(flight.id);
+                            console.log(`  🛫 ${callsign} TOOK OFF. Reporting ATD: ${atd}`);
+                        } else {
+                            // Still taxiing
+                            responseData.set(flight.id, { Callsign: callsign, IATA: iata, AOBT: info.aobt });
+                        }
                     }
                 }
 
-                // Small delay between detailed fetches
-                await new Promise(resolve => setTimeout(resolve, 200));
             } catch (err) {
                 console.log(`  ⚠️ Error processing ${flight.callsign || flight.id}: ${err.message}`);
             }
         }
         
-        // Step 5: Detect landed flights (disappeared from radar)
+        // Handle Disappeared Arrivals (Fallback for ground radar blackspots)
         for (const [id, info] of trackedArrivals.entries()) {
-            // Skip if we still see this flight in the current scan
             if (seenArrivalIds.has(id)) continue;
-            // Skip if already reported
-            if (reportedLandedFlights.has(id)) continue;
             
-            // Flight not seen this poll — increment miss counter
-            info.missCount = (info.missCount || 0) + 1;
+            info.missCount++;
+            if (info.state === 'AIRBORNE' && info.missCount >= MISS_THRESHOLD) {
+                // Plane vanished while airborne -> Assumed Touchdown (e.g. radar drop)
+                info.state = 'LANDED';
+                info.ata = info.lastETA ? getHktTime(info.lastETA) : getHktTime(); 
+                console.log(`  🛬 ${info.callsign} vanished from air. Target ATA: ${info.ata}`);
+            }
             
-            if (info.lastETA) {
-                const etaTime = new Date(info.lastETA).getTime();
-                const timeDiff = now.getTime() - etaTime;
-                
-                if (info.missCount >= MISS_THRESHOLD && timeDiff >= 0 && timeDiff < ATA_WINDOW_MS) {
-                    // Missing for 3+ polls AND ETA has PASSED (within last 15 min) -> confirmed landing
-                    const ataTime = getHktTime(); // ATA = Server time NOW (≈ touchdown)
-                    
-                    // Fetch AIBT: call fetchFlight one more time to get actual gate arrival
-                    let aibtTime = null;
-                    try {
-                        const postLandDetail = await fetchFlight(id);
-                        if (postLandDetail && postLandDetail.arrival) {
-                            aibtTime = getHktTime(postLandDetail.arrival);
-                        }
-                    } catch (e) {
-                        console.log(`  ⚠️ Could not fetch AIBT for ${info.callsign}: ${e.message}`);
-                    }
-                    
-                    responseData.set(id, { 
-                        Callsign: info.callsign, 
-                        IATA: info.iata, 
-                        ATA: ataTime,
-                        AIBT: aibtTime
-                    });
-                    reportedLandedFlights.set(id, Date.now());
-                    trackedArrivals.delete(id);
-                    console.log(`  🛬 ${info.callsign} confirmed landed. ATA: ${ataTime} | AIBT: ${aibtTime}`);
-                } else if (timeDiff >= ATA_WINDOW_MS) {
-                    // ETA was long ago but we never caught it -> clean up
-                    trackedArrivals.delete(id);
-                    console.log(`  🗑️ ${info.callsign} expired from tracking (ETA too old).`);
-                } else if (info.missCount < MISS_THRESHOLD) {
-                    // Not enough misses yet, could be radar glitch
-                    console.log(`  🔍 ${info.callsign} missing poll ${info.missCount}/${MISS_THRESHOLD}, waiting...`);
-                }
-                // If ETA is still far in the future -> radar glitch, keep tracking silently
+            if (info.state === 'LANDED') {
+                 if (info.missCount >= MISS_THRESHOLD * 2) {
+                     // Landed but vanished permanently during taxi -> Report just ATA and finish
+                     responseData.set(id, { Callsign: info.callsign, IATA: info.iata, ATA: info.ata }); // Push output once
+                     reportedArrivals.set(id, Date.now());
+                     trackedArrivals.delete(id);
+                     console.log(`  🛑 ${info.callsign} lost entirely on ground. Firing final ATA shot.`);
+                 } else {
+                     // Keep reporting just ATA while missing from ground radar briefly
+                     responseData.set(id, { Callsign: info.callsign, IATA: info.iata, ATA: info.ata });
+                 }
+            } else if (info.state === 'AIRBORNE') {
+                 // Still counting misses, keep reporting ETA
+                 responseData.set(id, { Callsign: info.callsign, IATA: info.iata, ETA: getHktTime(info.lastETA) });
             }
         }
         
-        // Update global cache
         flightDataCache = Array.from(responseData.values());
-        if (flightDataCache.length > 0) {
-            lastFetchTime = now;
-        }
+        if (flightDataCache.length > 0) Object.freeze(flightDataCache);
         
-        console.log(`  📋 Tracking ${trackedArrivals.size} arrivals`);
-        console.log(`[${now.toISOString()}] ✅ Cache updated: ${flightDataCache.length} Phuket flights.\n`);
+        lastFetchTime = now;
+        console.log(`  📋 Tracking ${trackedArrivals.size} arrivals, ${trackedDepartures.size} departures`);
+        console.log(`[${now.toISOString()}] ✅ API Cache populated: ${flightDataCache.length} live outputs`);
 
     } catch (error) {
         console.error(`[${new Date().toISOString()}] Error: ${error.message}`);
@@ -213,64 +248,41 @@ pollRadarData();
 // Poll every 60 seconds
 setInterval(pollRadarData, POLLING_INTERVAL);
 
-// Cleanup reported flights every hour to prevent memory bloat
+// Cleanup stale reported memory
 setInterval(() => {
     const now = Date.now();
     let cleaned = 0;
-    for (const [id, timestamp] of reportedLandedFlights.entries()) {
+    for (const [id, timestamp] of reportedArrivals.entries()) {
         if (now - timestamp > REPORT_EXPIRY) {
-            reportedLandedFlights.delete(id);
-            cleaned++;
+            reportedArrivals.delete(id); cleaned++;
         }
     }
-    for (const [id, timestamp] of reportedDepartedFlights.entries()) {
+    for (const [id, timestamp] of reportedDepartures.entries()) {
         if (now - timestamp > REPORT_EXPIRY) {
-            reportedDepartedFlights.delete(id);
-            cleaned++;
+            reportedDepartures.delete(id); cleaned++;
         }
     }
-    // Also clean stale tracked arrivals (older than 24 hours)
-    for (const [id, info] of trackedArrivals.entries()) {
-        if (info.lastETA) {
-            const etaTime = new Date(info.lastETA).getTime();
-            if (now - etaTime > REPORT_EXPIRY) {
-                trackedArrivals.delete(id);
-                cleaned++;
-            }
+    for (const [id, info] of trackedDepartures.entries()) {
+        if (info.aobt && now - new Date(info.aobt).getTime() > REPORT_EXPIRY) {
+            trackedDepartures.delete(id); cleaned++;
         }
     }
-    if (cleaned > 0) console.log(`[CLEANUP] Removed ${cleaned} expired flight records.`);
+    if (cleaned > 0) console.log(`[CLEANUP] Removed ${cleaned} stale items.`);
 }, CLEANUP_INTERVAL);
 
 // ===================================
 // API Endpoints
 // ===================================
-
-app.get('/api/flights/eta', (req, res) => {
-    res.json(flightDataCache);
-});
-
+app.get('/api/flights/eta', (req, res) => res.json(flightDataCache));
 app.get('/api/external/flights', (req, res) => {
-    const apiKey = req.headers['x-api-key'];
-    if (apiKey !== 'hkt-apron-static-key') {
-        return res.status(401).json({ error: 'Unauthorized: Invalid or missing x-api-key' });
-    }
+    if (req.headers['x-api-key'] !== 'hkt-apron-static-key') return res.status(401).json({ error: 'Unauthorized' });
     res.json(flightDataCache);
 });
-
-app.get('/api/health', (req, res) => {
-    res.json({
-        status: 'ok',
-        cacheLength: flightDataCache.length,
-        lastFetchTime: lastFetchTime
-    });
-});
+app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: flightDataCache.length, lastFetchTime }));
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v4.0 — ATA/ATD (Server Time) + AIBT/AOBT (FR24)`);
-    console.log(`📡 ${SCAN_ZONES.length} zones × 1500 = up to ${SCAN_ZONES.length * 1500} flights scanned`);
-    console.log(`🌐 Port ${PORT}`);
-    console.log(`👉 http://localhost:${PORT}/api/flights/eta`);
+    console.log(`🛰️  HKT-Radar-Engine v5.0 — Real Ground Speed Engine`);
+    console.log(`🌐 Port ${PORT} | Active Zones: ${SCAN_ZONES.length}`);
     console.log(`=============================================\n`);
 });
