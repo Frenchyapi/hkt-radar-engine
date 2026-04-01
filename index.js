@@ -42,7 +42,7 @@ const GROUND_INTERVAL = 15 * 1000;
 const EVENT_PERSISTENCE_TTL = 5 * 60 * 1000; 
 const PURGE_THRESHOLD = 60 * 60 * 1000; // 1 hour: Clear inactive memory
 
-// v7.4 Thresholds: Resilience & Anti-Spike
+// v7.5 Thresholds: Gate-Locked Accuracy
 const AIBT_STAND_RADIUS = 60;        
 const AIBT_STABLE_REQUIRED = 2;      
 const AOBT_MOVEMENT_THRESHOLD = 15;  
@@ -94,9 +94,9 @@ async function pollGroup(zones, groupName) {
         
         await processFlightData(Array.from(flightMap.values()), now, groupName === 'GROUND');
         
-        // Heartbeat summary
+        // Heartbeat summary (v7.5 Cleanup)
         if (loopCounts[groupName] % 10 === 0) {
-            console.log(`  💓 HEARTBEAT [${groupName}] - Active: ${trackedArrivals.size + trackedDepartures.size} tracking, ${recentEvents.size} in cache.`);
+            process.stdout.write(`  💓 [${groupName}] Active: ${trackedArrivals.size + trackedDepartures.size}, Cache: ${recentEvents.size}\n`);
         }
         console.log(`  ✅ [${groupName}] Finished!`);
     } catch (error) {
@@ -201,7 +201,6 @@ async function processFlightData(allFlights, now, isGroundScan) {
                     trackedDepartures.set(flight.id, { callsign, iata, state: 'PARKED', aobt: null, lockedStand, lastSeen: fTimestamp });
                 }
                 const info = trackedDepartures.get(flight.id);
-                info.lastSeen = fTimestamp;
 
                 if (info.state === 'PARKED') {
                     const currentStand = getStandInfo(flight.latitude, flight.longitude);
@@ -212,7 +211,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                         displacement = currentStand.distance; 
                     }
 
-                    // AOBT (v7.4 Resiliency Rule): Strictly require > 5m to avoid jitter (AIQ4115 fix)
+                    // AOBT (v7.5): Gate-Locked Accuracy
                     const isMovingFast = (flight.speed >= 1.5 && displacement > AOBT_MIN_DISPLACEMENT);
                     const isMovingNormal = (flight.speed >= 0.8 && displacement > AOBT_MOVEMENT_THRESHOLD);
                     const isMovingZeroSpeed = (displacement > AOBT_ZERO_SPEED_THRESHOLD); 
@@ -232,16 +231,17 @@ async function processFlightData(allFlights, now, isGroundScan) {
                             detailPromises.push((async () => {
                                 try {
                                     const detail = await withTimeout(fetchFlight(flight.id), 30000, `GhostPushback-${callsign}`);
-                                    const actualDepTs = detail.departure || detail.scheduledDeparture || (info.lastSeen / 1000);
+                                    // Use actual departure if available, but only if it's earlier than takeoff
+                                    const actualDepTs = (detail.departure && detail.departure < fRawTimestamp / 1000) ? detail.departure : (info.lastSeen / 1000);
                                     info.aobt = getHktTime(actualDepTs);
-                                    console.log(`  👻 ${callsign} GHOST PUSHBACK (Source: API) @ ${info.aobt}`);
+                                    console.log(`  👻 ${callsign} GHOST PUSHBACK (Gate-Lock Source) @ ${info.aobt}`);
                                     const standNr = info.lockedStand ? info.lockedStand.stand : 'UNKNOWN';
                                     const eventData = { Callsign: callsign, IATA: iata, AOBT: info.aobt, ATD: atd, Stand: standNr };
                                     responseData.set(flight.id, eventData);
                                     recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
                                 } catch (e) {
                                     info.aobt = getHktTime(info.lastSeen);
-                                    console.log(`  👻 ${callsign} GHOST PUSHBACK (Source: LastSeen) @ ${info.aobt}`);
+                                    console.log(`  👻 ${callsign} GHOST PUSHBACK (Fallback Source) @ ${info.aobt}`);
                                     const standNr = info.lockedStand ? info.lockedStand.stand : 'UNKNOWN';
                                     const eventData = { Callsign: callsign, IATA: iata, AOBT: info.aobt, ATD: atd, Stand: standNr };
                                     responseData.set(flight.id, eventData);
@@ -252,6 +252,11 @@ async function processFlightData(allFlights, now, isGroundScan) {
                         } else if (flight.altitude > 15000) {
                             reportedDepartures.add(flight.id);
                             trackedDepartures.delete(flight.id);
+                        }
+                    } else {
+                        // v7.5 GATE-LOCK: Only update lastSeen if still at the stand
+                        if (currentStand.distance < AIBT_STAND_RADIUS) {
+                            info.lastSeen = fTimestamp;
                         }
                     }
                 } else if (info.state === 'TAXIING') {
@@ -329,8 +334,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v7.4 — Resilience Fix`);
+    console.log(`🛰️  HKT-Radar-Engine v7.5 — Gate-Locked Fix`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 60s`);
-    console.log(`🛡️  Hanging Fix & Anti-Spike (5m Dist) Active`);
+    console.log(`🛡️  Ghost Pushback: Using Locked Stand Time`);
     console.log(`=============================================\n`);
 });
