@@ -25,16 +25,17 @@ const recentEvents = new Map();
 
 const reportedArrivals = new Set(); // Prevent duplicate firing
 const reportedDepartures = new Set();
-const trackedArrivals = new Map(); // id -> { callsign, iata, state, ata, lastETA, lastPos: {lat, lon, speed, ts}, missCount }
+const trackedArrivals = new Map(); // id -> { callsign, iata, state, ata, lastETA, lastPos: {lat, lon, speed, ts}, stallingCount }
 const trackedDepartures = new Map(); // id -> { callsign, iata, state, aobt, lockedStand: {nr, lat, lon} }
 
 const APPROACH_INTERVAL = 60 * 1000; 
 const GROUND_INTERVAL = 15 * 1000;   
 const EVENT_PERSISTENCE_TTL = 5 * 60 * 1000; 
 
-// v7.0 Thresholds: Performance & Sensitivity
-const AIBT_STAND_RADIUS = 40;        
-const AOBT_MOVEMENT_THRESHOLD = 15;  
+// v7.1 Thresholds: Performance & Stability
+const AIBT_STAND_RADIUS = 60;        // Meters: Wide radius to ensure no arrival is missed
+const AIBT_STABLE_REQUIRED = 2;      // Polls: Require 2 polls (30s) at speed <=1.0 to confirm parking
+const AOBT_MOVEMENT_THRESHOLD = 15;  // Meters: Displacement from locked position to trigger pushback
 
 // Contiguous Approach Zones
 const APPROACH_ZONES = [
@@ -122,7 +123,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                 seenInThisPoll.add(flight.id);
                 if (!trackedArrivals.has(flight.id)) {
                     trackedArrivals.set(flight.id, { 
-                        callsign, iata, state: 'AIRBORNE', ata: null, lastETA: null, lastPos: null 
+                        callsign, iata, state: 'AIRBORNE', ata: null, lastETA: null, lastPos: null, stallingCount: 0 
                     });
                 }
                 const info = trackedArrivals.get(flight.id);
@@ -155,15 +156,22 @@ async function processFlightData(allFlights, now, isGroundScan) {
                 
                 if (info.state === 'LANDED') {
                     const standInfo = getStandInfo(flight.latitude, flight.longitude);
+                    // AIBT (v7.1): 60m Radius + 2-Poll Stability Check
                     if (flight.speed <= 1.0 && standInfo.distance < AIBT_STAND_RADIUS) {
-                        const aibt = getHktTime(fTimestamp);
-                        const eventData = { Callsign: callsign, IATA: iata, ATA: info.ata, AIBT: aibt, Stand: standInfo.stand };
-                        responseData.set(flight.id, eventData);
-                        recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
-                        reportedArrivals.add(flight.id);
-                        trackedArrivals.delete(flight.id);
-                        console.log(`  🛑 ${callsign} PARKED @ ${aibt}`);
+                        info.stallingCount = (info.stallingCount || 0) + 1;
+                        if (info.stallingCount >= AIBT_STABLE_REQUIRED) {
+                            const aibt = getHktTime(fTimestamp);
+                            const eventData = { Callsign: callsign, IATA: iata, ATA: info.ata, AIBT: aibt, Stand: standInfo.stand };
+                            responseData.set(flight.id, eventData);
+                            recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
+                            reportedArrivals.add(flight.id);
+                            trackedArrivals.delete(flight.id);
+                            console.log(`  🛑 ${callsign} PARKED (Stable) @ ${aibt}`);
+                        } else {
+                            responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata });
+                        }
                     } else {
+                        info.stallingCount = 0; // Reset if movement resumed or outside bay
                         responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata });
                     }
                 }
@@ -242,6 +250,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                  const lastPos = info.lastPos;
                  if (lastPos) {
                      const standInfo = getStandInfo(lastPos.lat, lastPos.lon);
+                     // Ghost (v7.1): Expanded 60m radius for missing signals
                      if (standInfo.distance < AIBT_STAND_RADIUS && lastPos.speed < 5) {
                          const aibt = getHktTime(lastPos.ts);
                          const eventData = { Callsign: info.callsign, IATA: info.iata, ATA: info.ata, AIBT: aibt, Stand: standInfo.stand };
@@ -277,8 +286,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v7.0 — Initial Pos Lock`);
+    console.log(`🛰️  HKT-Radar-Engine v7.1 — Ground Stability`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 60s`);
-    console.log(`🛡️  AIBT: 40m | AOBT: 15m Offset + Speed`);
+    console.log(`🛡️  AIBT: 60m (Stable 30s) | AOBT: 15m Offset`);
     console.log(`=============================================\n`);
 });
