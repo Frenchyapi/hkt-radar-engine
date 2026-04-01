@@ -33,7 +33,10 @@ const GROUND_INTERVAL = 15 * 1000;   // 15s for apron/stands (AIBT/AOBT focus)
 const EVENT_PERSISTENCE_TTL = 5 * 60 * 1000; // Keep events in API for 5 minutes
 const MISS_THRESHOLD = 3; 
 const MAX_LANDED_MISSES = 45; 
-const STAND_RADIUS_METERS = 35; 
+
+// v6.9 Thresholds: Dual-Ground Performance
+const AIBT_STAND_RADIUS = 40;        // Meters: Wider radius for arrivals to ensure capture
+const AOBT_MOVEMENT_THRESHOLD = 15;  // Meters: Tight radius for departures to catch early pushback
 
 // Contiguous Approach Zones (Zero-Gap)
 const APPROACH_ZONES = [
@@ -142,7 +145,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
                 
                 if (info.state === 'LANDED') {
                     const standInfo = getStandInfo(flight.latitude, flight.longitude);
-                    if (flight.speed <= 1.0 && standInfo.distance < STAND_RADIUS_METERS) {
+                    // AIBT (v6.9): Forgiving Arrival Radius
+                    if (flight.speed <= 1.0 && standInfo.distance < AIBT_STAND_RADIUS) {
                         const aibt = getHktTime(fTimestamp);
                         const eventData = { Callsign: callsign, IATA: iata, ATA: info.ata, AIBT: aibt, Stand: standInfo.stand };
                         responseData.set(flight.id, eventData);
@@ -162,7 +166,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
 
                 if (info.state === 'PARKED') {
                     const standInfo = getStandInfo(flight.latitude, flight.longitude);
-                    if (flight.isOnGround && (flight.speed >= 2.0 || (flight.speed >= 1.0 && standInfo.distance > 35))) {
+                    // AOBT (v6.9): Hyper-Sensitive Pushback Threshold
+                    if (flight.isOnGround && (flight.speed >= 1.5 || (flight.speed >= 0.8 && standInfo.distance > AOBT_MOVEMENT_THRESHOLD))) {
                         info.state = 'TAXIING';
                         info.aobt = getHktTime(fTimestamp);
                         const eventData = { Callsign: callsign, IATA: iata, AOBT: info.aobt, Stand: standInfo.stand };
@@ -217,7 +222,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
                  const lastPos = info.lastPos;
                  if (lastPos) {
                      const standInfo = getStandInfo(lastPos.lat, lastPos.lon);
-                     if (standInfo.distance < 45 && lastPos.speed < 5) {
+                     // Ghost (v6.9): Use AIBT radius
+                     if (standInfo.distance < AIBT_STAND_RADIUS && lastPos.speed < 5) {
                          const aibt = getHktTime(lastPos.ts);
                          const eventData = { Callsign: info.callsign, IATA: info.iata, ATA: info.ata, AIBT: aibt, Stand: standInfo.stand };
                          responseData.set(id, eventData);
@@ -252,8 +258,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v6.8 — Resilient Polling`);
+    console.log(`🛰️  HKT-Radar-Engine v6.9 — Dual Thresholds`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 60s`);
-    console.log(`⚡ Async Parallel Processing Enabled`);
+    console.log(`⚡ AIBT: 40m | AOBT: 15m (Hyper-Sensitive)`);
     console.log(`=============================================\n`);
 });
