@@ -28,7 +28,7 @@ const reportedDepartures = new Set();
 const trackedArrivals = new Map(); // id -> { callsign, iata, state, ata, lastETA, lastPos: {lat, lon, speed, ts}, missCount }
 const trackedDepartures = new Map(); // id -> { callsign, iata, state, aobt }
 
-const POLLING_INTERVAL = 30 * 1000; // Increased to 30s for higher precision (v6.3)
+const POLLING_INTERVAL = 15 * 1000; // High-Frequency (15s) for Terminal monitoring (v6.4)
 const CLEANUP_INTERVAL = 60 * 60 * 1000;
 const REPORT_EXPIRY = 24 * 60 * 60 * 1000;
 const EVENT_PERSISTENCE_TTL = 5 * 60 * 1000; // Keep events in API for 5 minutes
@@ -36,17 +36,15 @@ const MISS_THRESHOLD = 3;
 const MAX_LANDED_MISSES = 45; 
 const STAND_RADIUS_METERS = 35; 
 
+// Focused HKT local zones to reduce total scan requests while increasing frequency
 const SCAN_ZONES = [
-    { name: 'SEA-Close', north: 20.0, west: 90.0, south: 0.0, east: 110.0, options: {} },
-    { name: 'West', north: 35.0, west: 45.0, south: 0.0, east: 90.0, options: {} },
-    { name: 'North-East', north: 45.0, west: 100.0, south: 20.0, east: 145.0, options: {} },
-    { name: 'South', north: 0.0, west: 95.0, south: -25.0, east: 140.0, options: {} },
+    { name: 'HKT-Approach', north: 8.6, west: 97.8, south: 7.7, east: 98.8, options: {} },
     { name: 'HKT-Ground', north: 8.150, west: 98.250, south: 8.080, east: 98.350, options: { onGround: true, inactive: true } },
 ];
 
 async function pollRadarData() {
     try {
-        console.log(`\n[${new Date().toISOString()}] High-Freq Engine (v6.3) scanning (30s)...`);
+        console.log(`\n[${new Date().toISOString()}] Terminal Engine (v6.4) scanning (15s)...`);
         const now = new Date().getTime();
         const flightMap = new Map();
         
@@ -58,7 +56,7 @@ async function pollRadarData() {
                         flightMap.set(f.id, f);
                     }
                 }
-                await new Promise(resolve => setTimeout(resolve, 300)); // Slightly faster between zones
+                await new Promise(resolve => setTimeout(resolve, 200)); 
             } catch (err) {
                 console.log(`  ⚠️ ${zone.name} failed: ${err.message}`);
             }
@@ -132,8 +130,8 @@ async function pollRadarData() {
 
                     if (info.state === 'PARKED') {
                         const standInfo = getStandInfo(flight.latitude, flight.longitude);
-                        // AOBT (v6.3): Higher sensitivity (speed >= 1.0 and distance > 5m)
-                        if (flight.isOnGround && flight.speed >= 1.0 && standInfo.distance > 5) {
+                        // AOBT (v6.4): Robust Logic -> Dual trigger: Speed >= 2.0 OR (Speed >= 1.0 AND Distance > 35m)
+                        if (flight.isOnGround && (flight.speed >= 2.0 || (flight.speed >= 1.0 && standInfo.distance > 35))) {
                             info.state = 'TAXIING';
                             info.aobt = getHktTime(fTimestamp);
                             const eventData = { Callsign: callsign, IATA: iata, AOBT: info.aobt, Stand: standInfo.stand };
@@ -208,7 +206,7 @@ async function pollRadarData() {
                      recentEvents.set(id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
                      reportedArrivals.add(id);
                      trackedArrivals.delete(id);
-                     console.log(`  🗑️ ${info.callsign} persistence timeout (45m).`);
+                     console.log(`  🗑️ ${info.callsign} persistence timeout.`);
                  } else {
                      responseData.set(id, { Callsign: info.callsign, IATA: info.iata, ATA: info.ata });
                  }
@@ -229,7 +227,7 @@ async function pollRadarData() {
         flightDataCache = Array.from(responseData.values());
         if (flightDataCache.length > 0) Object.freeze(flightDataCache);
         lastFetchTime = new Date();
-        console.log(`  📋 Active: Arr=${trackedArrivals.size}, Dep=${trackedDepartures.size}, RecentHistory=${recentEvents.size}`);
+        console.log(`  📋 Active: Arr=${trackedArrivals.size}, Dep=${trackedDepartures.size}, History=${recentEvents.size}`);
     } catch (error) {
         console.error(`[${new Date().toISOString()}] Loop Error: ${error.message}`);
     }
@@ -255,8 +253,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v6.3 — High-Frequency + History`);
-    console.log(`🌐 Port ${PORT} | Polling: 30s | Persistence: 5m`);
-    console.log(`📍 Speed: <= 1.0 (AIBT) / >= 1.0 + 5m (AOBT)`);
+    console.log(`🛰️  HKT-Radar-Engine v6.4 — 15s Terminal Active`);
+    console.log(`🌐 Port ${PORT} | Polling: 15s | History: 5m`);
+    console.log(`📍 Robust AOBT Logic: Speed 2.0 or 1.0 @ 35m`);
     console.log(`=============================================\n`);
 });
