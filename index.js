@@ -128,7 +128,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
         const isFutureTime = (fRawTimestamp > now + 30000);
         const fTimestamp = isFutureTime ? now : fRawTimestamp;
 
-        const isPhuketDeparture = (origin === "HKT") || (flight.isOnGround && destination !== "" && destination !== "HKT");
+        // v7.9: Wide-Scan Ground Awareness. If it's a ground scan, it's at HKT, period.
+        const isPhuketDeparture = isGroundScan || (origin === "HKT") || (flight.isOnGround && destination !== "" && destination !== "HKT");
         const isPhuketArrival = (destination === "HKT");
         
         if (!isPhuketDeparture && !isPhuketArrival) continue;
@@ -339,8 +340,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v7.8 — Jitter Guard`);
+    console.log(`🛰️  HKT-Radar-Engine v7.9 — Wide-Scan Ground`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 60s`);
-    console.log(`🛡️  Ground AOBT: 15m Buffer + Stability Active`);
+    console.log(`🛡️  Catch-All Ground Trigger Active (Jetstar Fix)`);
     console.log(`=============================================\n`);
 });
