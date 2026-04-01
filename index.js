@@ -85,8 +85,12 @@ async function processFlightData(allFlights, now, isGroundScan) {
     for (const flight of allFlights) {
         const origin = (flight.origin || "").toUpperCase();
         const destination = (flight.destination || "").toUpperCase();
-        const fTimestamp = (flight.timestamp || Math.floor(now / 1000)) * 1000;
+        const fRawTimestamp = (flight.timestamp || Math.floor(now / 1000)) * 1000;
         
+        // Anti-Future Fix: If timestamp is > 30s in the future, it's predicted/ETA data.
+        const isFutureTime = (fRawTimestamp > now + 30000);
+        const fTimestamp = isFutureTime ? now : fRawTimestamp;
+
         const isPhuketDeparture = (origin === "HKT") || (flight.isOnGround && destination !== "" && destination !== "HKT");
         const isPhuketArrival = (destination === "HKT");
         
@@ -108,14 +112,22 @@ async function processFlightData(allFlights, now, isGroundScan) {
                 info.missCount = 0;
                 info.lastPos = { lat: flight.latitude, lon: flight.longitude, speed: flight.speed, ts: fTimestamp };
 
+                // Recovery logic: If state was incorrectly set to LANDED (like EY412 bug)
+                if (info.state === 'LANDED' && flight.altitude > 1500) {
+                    console.log(`  ♻️ ${callsign} RECOVERY: Resetting to AIRBORNE (Altitude: ${flight.altitude}ft)`);
+                    info.state = 'AIRBORNE';
+                    info.ata = null;
+                    recentEvents.delete(flight.id); // Remove bad history
+                }
+
                 if (info.state === 'AIRBORNE') {
-                    if (flight.isOnGround || flight.altitude < 100) {
+                    // Strict Trigger (v6.7): Must be < 500ft and NOT in the future
+                    if (!isFutureTime && (flight.isOnGround || flight.altitude < 100) && flight.altitude < 500) {
                         info.state = 'LANDED';
                         info.ata = getHktTime(fTimestamp);
                         console.log(`  🛬 ${callsign} TOUCHDOWN @ ${info.ata}`);
                     } else if (!isGroundScan) {
                         try {
-                            // Only fetch details in approach scan
                             const detail = await fetchFlight(flight.id);
                             info.lastETA = detail.arrival || detail.scheduledArrival || null;
                         } catch(e) {}
@@ -147,7 +159,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
 
                 if (info.state === 'PARKED') {
                     const standInfo = getStandInfo(flight.latitude, flight.longitude);
-                    // AOBT (v6.4+): Robust Logic -> Dual trigger: Speed >= 2.0 OR (Speed >= 1.0 AND Distance > 35m)
+                    // AOBT (v6.4+): Robust Logic
                     if (flight.isOnGround && (flight.speed >= 2.0 || (flight.speed >= 1.0 && standInfo.distance > 35))) {
                         info.state = 'TAXIING';
                         info.aobt = getHktTime(fTimestamp);
@@ -156,7 +168,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                         recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
                         console.log(`  🚜 ${callsign} PUSHBACK detected @ ${info.aobt}`);
                     } else if (!flight.isOnGround) {
-                        if (flight.altitude < 10000) {
+                        if (flight.altitude < 10000 && flight.altitude > 0) {
                             info.state = 'AIRBORNE';
                             const atd = getHktTime(fTimestamp);
                             const eventData = { Callsign: callsign, IATA: iata, ATD: atd, AOBT: atd || getHktTime(fTimestamp) };
@@ -165,7 +177,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                             reportedDepartures.add(flight.id);
                             trackedDepartures.delete(flight.id);
                             console.log(`  🛫 ${callsign} TOOK OFF @ ${atd}`);
-                        } else {
+                        } else if (flight.altitude > 10000) {
                             reportedDepartures.add(flight.id);
                             trackedDepartures.delete(flight.id);
                         }
@@ -190,11 +202,10 @@ async function processFlightData(allFlights, now, isGroundScan) {
         }
     }
     
-    // Ghost block logic (only process disappearance in ground scan if landed)
+    // Ghost block logic
     if (isGroundScan) {
         for (const [id, info] of trackedArrivals.entries()) {
             if (seenInThisPoll.has(id)) continue;
-            // Ghost Block / Disappeared Arrivals
             if (info.state === 'LANDED') {
                  const lastPos = info.lastPos;
                  if (lastPos) {
@@ -234,8 +245,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v6.6 — Zero-Gap Monitoring`);
+    console.log(`🛰️  HKT-Radar-Engine v6.7 — Strict Validation`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 60s`);
-    console.log(`📍 Full Airport Ground Scan Enabled`);
+    console.log(`🛡️  Altitude Shield & Future-Time Filter Active`);
     console.log(`=============================================\n`);
 });
