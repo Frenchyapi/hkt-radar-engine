@@ -211,11 +211,11 @@ async function processFlightData(allFlights, now, isGroundScan) {
                         if (flight.altitude < 15000 && flight.altitude > 0) {
                             info.state = 'AIRBORNE';
                             const atd = getHktTime(fTimestamp);
-                            // Type C Fix: Reappeared at Runway/Airborne after a gap
+                            // v7.3 Fixed: Use API actualDeparture OR LastSeen timestamp at stand
                             detailPromises.push((async () => {
                                 try {
                                     const detail = await fetchFlight(flight.id);
-                                    const actualDepTs = detail.departure || detail.scheduledDeparture || (fRawTimestamp / 1000 - 600);
+                                    const actualDepTs = detail.departure || detail.scheduledDeparture || (info.lastSeen / 1000);
                                     info.aobt = getHktTime(actualDepTs);
                                     console.log(`  👻 ${callsign} GHOST PUSHBACK (Source: API) @ ${info.aobt}`);
                                     const standNr = info.lockedStand ? info.lockedStand.stand : 'UNKNOWN';
@@ -223,9 +223,13 @@ async function processFlightData(allFlights, now, isGroundScan) {
                                     responseData.set(flight.id, eventData);
                                     recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
                                 } catch (e) {
-                                    // Fallback to Reappearance - 10 minutes
-                                    info.aobt = getHktTime(fRawTimestamp / 1000 - 600);
-                                    console.log(`  👻 ${callsign} GHOST PUSHBACK (Source: Estimate) @ ${info.aobt}`);
+                                    // Fallback to LastSeen at stand (No more 10-min estimate)
+                                    info.aobt = getHktTime(info.lastSeen);
+                                    console.log(`  👻 ${callsign} GHOST PUSHBACK (Source: LastSeen) @ ${info.aobt}`);
+                                    const standNr = info.lockedStand ? info.lockedStand.stand : 'UNKNOWN';
+                                    const eventData = { Callsign: callsign, IATA: iata, AOBT: info.aobt, ATD: atd, Stand: standNr };
+                                    responseData.set(flight.id, eventData);
+                                    recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
                                 }
                             })());
                             reportedDepartures.add(flight.id);
@@ -233,6 +237,9 @@ async function processFlightData(allFlights, now, isGroundScan) {
                             reportedDepartures.add(flight.id);
                             trackedDepartures.delete(flight.id);
                         }
+                    } else {
+                        // Still on ground and not moving enough -> Update LastSeen at stand
+                        info.lastSeen = fTimestamp;
                     }
                 } else if (info.state === 'TAXIING') {
                     if (!flight.isOnGround) {
@@ -302,8 +309,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v7.2 — Ghost Resiliency`);
+    console.log(`🛰️  HKT-Radar-Engine v7.3 — Last-Seen Resilio`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 60s`);
-    console.log(`🛡️  Zero-Spd Trigger & Ghost Pushback Active`);
+    console.log(`🛡️  Ghost Pushback: Using API/Last-Seen Time`);
     console.log(`=============================================\n`);
 });
