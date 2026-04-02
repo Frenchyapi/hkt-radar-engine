@@ -161,7 +161,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                     if (!isFutureTime && (flight.isOnGround || flight.altitude < 100) && flight.altitude < 500) {
                         info.state = 'LANDED';
                         info.ata = getHktTime(fTimestamp);
-                        console.log(`  🛬 ${callsign} TOUCHDOWN @ ${info.ata}`);
+                        console.log(`  [EVENT] 🛬 ${callsign} TOUCHDOWN @ ${info.ata}`);
                     } else if (!isGroundScan) {
                         detailPromises.push((async () => {
                             try {
@@ -186,7 +186,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                             recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
                             reportedArrivals.add(flight.id);
                             trackedArrivals.delete(flight.id);
-                            console.log(`  🛑 ${callsign} PARKED @ ${aibt}`);
+                            console.log(`  [EVENT] 🛑 ${callsign} PARKED @ ${aibt}`);
                         } else {
                             responseData.set(flight.id, { Callsign: callsign, IATA: iata, ATA: info.ata });
                         }
@@ -227,7 +227,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                             const eventData = { Callsign: callsign, IATA: iata, AOBT: info.aobt, Stand: standNr };
                             responseData.set(flight.id, eventData);
                             recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
-                            console.log(`  🚜 ${callsign} PUSHBACK detected (Move: ${displacement.toFixed(1)}m, Spd: ${flight.speed}) @ ${info.aobt}`);
+                            console.log(`  [EVENT] 🚜 ${callsign} PUSHBACK detected (Move: ${displacement.toFixed(1)}m, Spd: ${flight.speed}) @ ${info.aobt}`);
                         }
                     } else if (!flight.isOnGround) {
                         if (flight.altitude < 15000 && flight.altitude > 0) {
@@ -239,14 +239,14 @@ async function processFlightData(allFlights, now, isGroundScan) {
                                     // Use actual departure if available, but only if it's earlier than takeoff
                                     const actualDepTs = (detail.departure && detail.departure < fRawTimestamp / 1000) ? detail.departure : (info.lastSeen / 1000);
                                     info.aobt = getHktTime(actualDepTs);
-                                    console.log(`  👻 ${callsign} GHOST PUSHBACK (Gate-Lock Source) @ ${info.aobt}`);
+                                    console.log(`  [EVENT] 👻 ${callsign} GHOST PUSHBACK (Gate-Lock Source) @ ${info.aobt}`);
                                     const standNr = info.lockedStand ? info.lockedStand.stand : 'UNKNOWN';
                                     const eventData = { Callsign: callsign, IATA: iata, AOBT: info.aobt, ATD: atd, Stand: standNr };
                                     responseData.set(flight.id, eventData);
                                     recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
                                 } catch (e) {
                                     info.aobt = getHktTime(info.lastSeen);
-                                    console.log(`  👻 ${callsign} GHOST PUSHBACK (Fallback Source) @ ${info.aobt}`);
+                                    console.log(`  [EVENT] 👻 ${callsign} GHOST PUSHBACK (Fallback Source) @ ${info.aobt}`);
                                     const standNr = info.lockedStand ? info.lockedStand.stand : 'UNKNOWN';
                                     const eventData = { Callsign: callsign, IATA: iata, AOBT: info.aobt, ATD: atd, Stand: standNr };
                                     responseData.set(flight.id, eventData);
@@ -274,7 +274,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                         recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
                         reportedDepartures.add(flight.id);
                         trackedDepartures.delete(flight.id);
-                        console.log(`  🛫 ${callsign} TOOK OFF @ ${atd}`);
+                        console.log(`  [EVENT] 🛫 ${callsign} TOOK OFF @ ${atd}`);
                     } else {
                         responseData.set(flight.id, { Callsign: callsign, IATA: iata, AOBT: info.aobt });
                     }
@@ -305,7 +305,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                          recentEvents.set(id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
                          reportedArrivals.add(id);
                          trackedArrivals.delete(id);
-                         console.log(`  👻 ${info.callsign} GHOST ARRIVAL @ ${aibt}`);
+                         console.log(`  [EVENT] 👻 ${info.callsign} GHOST ARRIVAL @ ${aibt}`);
                      }
                  }
             }
@@ -340,8 +340,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v7.9 — Wide-Scan Ground`);
+    console.log(`🛰️  HKT-Radar-Engine v8.0 — Unified Tagging`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 60s`);
-    console.log(`🛡️  Catch-All Ground Trigger Active (Jetstar Fix)`);
+    console.log(`🛡️  Search Tag: [EVENT] active logic`);
     console.log(`=============================================\n`);
 });
