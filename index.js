@@ -42,13 +42,13 @@ const GROUND_INTERVAL = 15 * 1000;
 const EVENT_PERSISTENCE_TTL = 5 * 60 * 1000; 
 const PURGE_THRESHOLD = 60 * 60 * 1000; // 1 hour: Clear inactive memory
 
-// v7.8 Thresholds: Ultra-Stable Accuracy
+// v8.1 Thresholds: Fast Response Tuning
 const AIBT_STAND_RADIUS = 60;        
 const AIBT_STABLE_REQUIRED = 2;      
-const AOBT_MOVEMENT_THRESHOLD = 20;  // Normal movement
-const AOBT_ZERO_SPEED_THRESHOLD = 30; // Speedless heavy pushback
-const AOBT_MIN_DISPLACEMENT = 15;     // Jitter Buffer (AZV2950 Fix)
-const AOBT_STABLE_REQUIRED = 2;      // Polls required to confirm push
+const AOBT_MOVEMENT_THRESHOLD = 15;  // Reduced from 20m
+const AOBT_ZERO_SPEED_THRESHOLD = 20; // Reduced from 30m (Fast catch for heavy)
+const AOBT_MIN_DISPLACEMENT = 12;     // Jitter Buffer (Safety balanced)
+const AOBT_STABLE_REQUIRED = 2;      
 
 // Contiguous Approach Zones
 const APPROACH_ZONES = [
@@ -213,14 +213,14 @@ async function processFlightData(allFlights, now, isGroundScan) {
                         displacement = currentStand.distance; 
                     }
 
-                    // AOBT (v7.8): Ultra-Stable Rules
+                    // AOBT (v8.1): Ultra-Stable Rules
                     const isMovingFast = (flight.speed >= 1.5 && displacement > AOBT_MIN_DISPLACEMENT);
                     const isMovingNormal = (flight.speed >= 0.8 && displacement > AOBT_MOVEMENT_THRESHOLD);
                     const isMovingZeroSpeed = (displacement > AOBT_ZERO_SPEED_THRESHOLD); 
 
                     if (flight.isOnGround && (isMovingFast || isMovingNormal || isMovingZeroSpeed)) {
                         info.stallingCount = (info.stallingCount || 0) + 1;
-                        if (info.stallingCount >= AOBT_STABLE_REQUIRED || displacement > 25) {
+                        if (info.stallingCount >= AOBT_STABLE_REQUIRED || displacement > 20) {
                             info.state = 'TAXIING';
                             info.aobt = getHktTime(fTimestamp);
                             const standNr = info.lockedStand ? info.lockedStand.stand : currentStand.stand;
@@ -340,8 +340,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v8.0 — Unified Tagging`);
+    console.log(`🛰️  HKT-Radar-Engine v8.1 — Fast Response Tuning`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 60s`);
-    console.log(`🛡️  Search Tag: [EVENT] active logic`);
+    console.log(`🛡️  Ground AOBT: 12m Buffer + 20m Zero-Spd`);
     console.log(`=============================================\n`);
 });
