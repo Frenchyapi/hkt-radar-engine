@@ -17,6 +17,15 @@ async function withTimeout(promise, ms = 30000, label = 'API') {
     return Promise.race([promise, timeout]);
 }
 
+/**
+ * v8.5 Helper: Strips leading zeros from numeric part of flight numbers/callsigns
+ * Examples: JQ071 -> JQ71, WK051 -> WK51
+ */
+function normalizeFlightNumber(str) {
+    if (!str) return '';
+    return str.replace(/([A-Z]+)0+([1-9]\d*)/i, '$1$2');
+}
+
 // Helper: Convert Server Timestamp (Unix ms) or Date to ISO +07:00
 function getHktTime(input) {
     const date = (typeof input === 'number' && input < 2000000000) ? new Date(input * 1000) : new Date(input || Date.now());
@@ -37,18 +46,21 @@ const reportedDepartures = new Set();
 const trackedArrivals = new Map(); // id -> { callsign, iata, state, ata, lastETA, lastPos, stallingCount, lastSeen }
 const trackedDepartures = new Map(); // id -> { callsign, iata, state, aobt, lockedStand, lastSeen, stallingCount }
 
-const APPROACH_INTERVAL = 60 * 1000; 
-const GROUND_INTERVAL = 15 * 1000;   
+const APPROACH_INTERVAL = 30000;     // v8.5: Increased precision 30s
+const GROUND_INTERVAL = 15000;       
 const EVENT_PERSISTENCE_TTL = 5 * 60 * 1000; 
 const PURGE_THRESHOLD = 60 * 60 * 1000; // 1 hour: Clear inactive memory
 
-// v8.2 Thresholds: ACDM-Ready & Anti-Drift (AIQ9161, EY411 Fix)
+// v8.5 Balance Thresholds (Stability First)
 const AIBT_STAND_RADIUS = 60;        
 const AIBT_STABLE_REQUIRED = 2;      
-const AOBT_MOVEMENT_THRESHOLD = 25;  // Increased from 15m to avoid drift
-const AOBT_ZERO_SPEED_THRESHOLD = 35; // Increased from 20m (Anti-Drift 20m)
+const AOBT_MOVEMENT_THRESHOLD = 25;  
+const AOBT_ZERO_SPEED_THRESHOLD = 35; 
 const AOBT_MIN_DISPLACEMENT = 15;     
-const AOBT_STABLE_REQUIRED = 3;      // Require 45s of sustained movement (3 polls)
+const AOBT_STABLE_REQUIRED = 3;      
+
+// v8.5 Whitelist: Carriers known for leading-zero/missing-metadata issues at HKT
+const CARRIER_WHITELIST = ['JQ', 'WK', '3K', 'JST', 'EDW', 'TGW'];
 
 // Contiguous Approach Zones
 const APPROACH_ZONES = [
@@ -128,14 +140,18 @@ async function processFlightData(allFlights, now, isGroundScan) {
         const isFutureTime = (fRawTimestamp > now + 30000);
         const fTimestamp = isFutureTime ? now : fRawTimestamp;
 
-        // v7.9: Wide-Scan Ground Awareness. If it's a ground scan, it's at HKT, period.
+        const callsign = flight.callsign || flight.flight || 'UNKNOWN';
+        const normCallsign = normalizeFlightNumber(callsign);
+        
+        // v8.5 Selective Bypass: Allow whitelisted carriers even if destination tag is missing
+        const isWhitelisted = CARRIER_WHITELIST.some(prefix => normCallsign.startsWith(prefix));
+
         const isPhuketDeparture = isGroundScan || (origin === "HKT") || (flight.isOnGround && destination !== "" && destination !== "HKT");
-        const isPhuketArrival = (destination === "HKT");
+        const isPhuketArrival = (destination === "HKT") || (isGroundScan && isWhitelisted);
         
         if (!isPhuketDeparture && !isPhuketArrival) continue;
         if (reportedArrivals.has(flight.id) || reportedDepartures.has(flight.id)) continue;
 
-        const callsign = flight.callsign || flight.flight || flight.registration || 'UNKNOWN';
         const iata = flight.flight || 'UNKNOWN';
 
         try {
@@ -181,7 +197,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                         info.stallingCount = (info.stallingCount || 0) + 1;
                         if (info.stallingCount >= AIBT_STABLE_REQUIRED) {
                             const aibt = getHktTime(fTimestamp);
-                            const eventData = { Callsign: callsign, iata: iata, ATA: info.ata, AIBT: aibt, Stand: standInfo.stand };
+                            const eventData = { Callsign: callsign, IATA: iata, ATA: info.ata, AIBT: aibt, Stand: standInfo.stand };
                             responseData.set(flight.id, eventData);
                             recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
                             reportedArrivals.add(flight.id);
@@ -213,7 +229,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                         displacement = currentStand.distance; 
                     }
 
-                    // AOBT (v8.2): ACDM-Ready & Anti-Drift Logic
+                    // AOBT (v8.2-v8.5 Balance): Anti-Drift Thresholds
                     const isMovingFast = (flight.speed >= 1.5 && displacement > AOBT_MIN_DISPLACEMENT);
                     const isMovingNormal = (flight.speed >= 0.8 && displacement > AOBT_MOVEMENT_THRESHOLD);
                     const isMovingZeroSpeed = (displacement > AOBT_ZERO_SPEED_THRESHOLD); 
@@ -267,7 +283,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                     if (!flight.isOnGround) {
                         info.state = 'AIRBORNE';
                         const atd = getHktTime(fTimestamp);
-                        const eventData = { Callsign: callsign, iata: iata, AOBT: info.aobt, ATD: atd };
+                        const eventData = { Callsign: callsign, IATA: iata, AOBT: info.aobt, ATD: atd };
                         responseData.set(flight.id, eventData);
                         recentEvents.set(flight.id, { data: eventData, expiry: now + EVENT_PERSISTENCE_TTL });
                         reportedDepartures.add(flight.id);
@@ -338,8 +354,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v8.2 — ACDM-Ready & Anti-Drift`);
-    console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 60s`);
-    console.log(`🛡️  Stability: 3-Poll Move Req | Jitter Buffer 35m`);
+    console.log(`🛰️  HKT-Radar-Engine v8.5 — Final Balance`);
+    console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 30s`);
+    console.log(`🛡️  Targeted Bypass: ON | Normalization: ON`);
     console.log(`=============================================\n`);
 });
