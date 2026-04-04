@@ -46,7 +46,7 @@ const reportedDepartures = new Set();
 const trackedArrivals = new Map(); // id -> { callsign, iata, state, ata, lastETA, lastPos, stallingCount, lastSeen }
 const trackedDepartures = new Map(); // id -> { callsign, iata, state, aobt, lockedStand, lastSeen, stallingCount }
 
-const APPROACH_INTERVAL = 30000;     // v8.5: Increased precision 30s
+const APPROACH_INTERVAL = 30000;     
 const GROUND_INTERVAL = 15000;       
 const EVENT_PERSISTENCE_TTL = 5 * 60 * 1000; 
 const PURGE_THRESHOLD = 60 * 60 * 1000; // 1 hour: Clear inactive memory
@@ -58,7 +58,7 @@ const AOBT_ZERO_SPEED_THRESHOLD = 35;
 const AOBT_MIN_DISPLACEMENT = 15;     
 const AOBT_STABLE_REQUIRED = 3;      
 
-// v8.5-8.7 Configs
+// v8.5-8.9 Configs
 const CARRIER_WHITELIST = ['JQ', 'WK', 'JST', 'EDW'];
 const BLACKLIST_CALLSIGNS = ['SITEMON', 'VTSPTWR', 'VTSPGND', 'TWR', 'GND'];
 
@@ -89,7 +89,6 @@ function getDistance(lat1, lon1, lat2, lon2) {
 async function pollGroup(zones, groupName) {
     try {
         loopCounts[groupName]++;
-        console.log(`[${new Date().toISOString()}] Loop [${groupName}] Scanning (#${loopCounts[groupName]})...`);
         const now = new Date().getTime();
         const flightMap = new Map();
         
@@ -107,11 +106,9 @@ async function pollGroup(zones, groupName) {
         
         await processFlightData(Array.from(flightMap.values()), now, groupName === 'GROUND');
         
-        // HEARTBEAT summary (v7.6 Professional Cleanup)
-        if (loopCounts[groupName] % 10 === 0) {
-            process.stdout.write(`  [${groupName}] Active: ${trackedArrivals.size + trackedDepartures.size}, Cache: ${recentEvents.size}\n`);
-        }
-        console.log(`  ✅ [${groupName}] Finished!`);
+        // v8.9 Increased Heartbeat Visibility
+        const totalTracking = trackedArrivals.size + trackedDepartures.size;
+        console.log(`[${new Date().toISOString()}] Loop [${groupName}] #${loopCounts[groupName]} | Active: ${totalTracking} | Found: ${flightMap.size} | Cache: ${recentEvents.size}`);
     } catch (error) {
         console.error(`[${new Date().toISOString()}] Loop [${groupName}] Fatal Error: ${error.message}`);
     }
@@ -140,7 +137,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
         const isFutureTime = (fRawTimestamp > now + 30000);
         const fTimestamp = isFutureTime ? now : fRawTimestamp;
 
-        const callsign = flight.callsign || flight.flight || 'UNKNOWN';
+        // v8.9: Improved identification (Registration fallback)
+        const callsign = flight.callsign || flight.flight || flight.registration || 'UNKNOWN';
         const normCallsign = normalizeFlightNumber(callsign);
         
         // v8.8 Filter: Ignore non-aircraft transponders (Tower/SITEMON)
@@ -154,7 +152,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
         if (!isPhuketDeparture && !isPhuketArrival) continue;
         if (reportedArrivals.has(flight.id) || reportedDepartures.has(flight.id)) continue;
 
-        const iata = flight.flight || 'UNKNOWN';
+        const iata = flight.flight || flight.registration || 'UNKNOWN';
 
         try {
             if (isPhuketArrival) {
@@ -325,11 +323,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
                      }
                  }
             }
-            // Memory Cleanup (Arrivals)
             if (now - info.lastSeen > PURGE_THRESHOLD) trackedArrivals.delete(id);
         }
-        
-        // Memory Cleanup (Departures)
         for (const [id, info] of trackedDepartures.entries()) {
             if (now - info.lastSeen > PURGE_THRESHOLD) trackedDepartures.delete(id);
         }
@@ -339,11 +334,9 @@ async function processFlightData(allFlights, now, isGroundScan) {
     lastFetchTime = new Date();
 }
 
-// Polling intervals
 setInterval(() => pollGroup(APPROACH_ZONES, 'APPROACH'), APPROACH_INTERVAL);
 setInterval(() => pollGroup(GROUND_ZONES, 'GROUND'), GROUND_INTERVAL);
 
-// Initial triggers
 pollGroup(APPROACH_ZONES, 'APPROACH');
 setTimeout(() => pollGroup(GROUND_ZONES, 'GROUND'), 2000); 
 
@@ -356,8 +349,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v8.8 — SITEMON Filter`);
+    console.log(`🛰️  HKT-Radar-Engine v8.9 — Visibility Update`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 30s`);
-    console.log(`🛡️  Dynamic Radius: ON | Tower Filter: ON`);
+    console.log(`🛡️  Tower Filter: ACTIVE | Multi-ID: ACTIVE`);
     console.log(`=============================================\n`);
 });
