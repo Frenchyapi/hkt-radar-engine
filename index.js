@@ -59,8 +59,8 @@ const AOBT_ZERO_SPEED_THRESHOLD = 35;
 const AOBT_MIN_DISPLACEMENT = 15;     
 const AOBT_STABLE_REQUIRED = 3;      
 
-// v8.5 Whitelist: Carriers known for leading-zero/missing-metadata issues at HKT
-const CARRIER_WHITELIST = ['JQ', 'WK', '3K', 'JST', 'EDW', 'TGW'];
+// v8.6 Whitelist: Carriers known for leading-zero/missing-metadata issues at HKT
+const CARRIER_WHITELIST = ['JQ', 'WK', 'JST', 'EDW'];
 
 // Contiguous Approach Zones
 const APPROACH_ZONES = [
@@ -354,8 +354,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v8.5 — Final Balance`);
+    console.log(`🛰️  HKT-Radar-Engine v8.6 — Strict Fix`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 30s`);
-    console.log(`🛡️  Targeted Bypass: ON | Normalization: ON`);
+    console.log(`🛡️  Targeted Bypass: JQ/WK ONLY | Normalization: ON`);
     console.log(`=============================================\n`);
 });
