@@ -72,7 +72,7 @@ const trackedArrivals = new Map(); // id -> { callsign, iata, state, ata, lastET
 const trackedDepartures = new Map(); // id -> { callsign, iata, state, aobt, lockedStand, lastSeen, stallingCount }
 
 const APPROACH_INTERVAL = 30000;     
-const GROUND_INTERVAL = 15000;       
+const GROUND_INTERVAL = 8000;        
 const EVENT_PERSISTENCE_TTL = 5 * 60 * 1000; 
 const PURGE_THRESHOLD = 60 * 60 * 1000; // 1 hour: Clear inactive memory
 
@@ -421,7 +421,7 @@ app.get('/api/health', (req, res) => res.json({
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
     console.log(`🛰️  HKT-Radar-Engine v9.6 — Production Armor`);
-    console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 30s`);
+    console.log(`🌐 Port ${PORT} | Apron: 8s | Approach: 30s`);
     console.log(`🛡️  RateLimit: 30/min | CrashGuard: ON`);
     console.log(`=============================================\n`);
 });
