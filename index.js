@@ -7,7 +7,33 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
-app.use(express.json());
+
+// v9.6: Rate Limiting (30 requests/min per IP — no library needed)
+const rateLimitMap = new Map();
+const RATE_LIMIT_MAX = 30;
+const RATE_LIMIT_WINDOW = 60000; // 1 minute
+setInterval(() => rateLimitMap.clear(), RATE_LIMIT_WINDOW);
+
+app.use((req, res, next) => {
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    const count = (rateLimitMap.get(ip) || 0) + 1;
+    rateLimitMap.set(ip, count);
+    if (count > RATE_LIMIT_MAX) {
+        return res.status(429).json({ error: 'Too many requests. Try again in 1 minute.' });
+    }
+    next();
+});
+
+// v9.6: Crash Guard — Prevents total process death from unexpected errors
+process.on('uncaughtException', (err) => {
+    console.error(`[${new Date().toISOString()}] 💀 UNCAUGHT EXCEPTION: ${err.message}`);
+    console.error(err.stack);
+    // Don't exit — let the engine keep running
+});
+process.on('unhandledRejection', (reason) => {
+    console.error(`[${new Date().toISOString()}] 💀 UNHANDLED REJECTION: ${reason}`);
+    // Don't exit — let the engine keep running
+});
 
 /**
  * API Timeout Wrapper: Prevents engine from hanging on slow FR24 responses
@@ -383,6 +409,8 @@ app.get('/api/external/flights', (req, res) => {
 });
 app.get('/api/health', (req, res) => res.json({ 
     status: 'ok', 
+    version: 'v9.6',
+    uptime: Math.floor(process.uptime()) + 's',
     cacheLength: flightDataCache.length, 
     lastFetchTime, 
     tracking: trackedArrivals.size + trackedDepartures.size,
@@ -392,8 +420,8 @@ app.get('/api/health', (req, res) => res.json({
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v9.5 — Hardening`);
+    console.log(`🛰️  HKT-Radar-Engine v9.6 — Production Armor`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 30s`);
-    console.log(`🛡️  StateLock: ON | MemPurge: 3 days`);
+    console.log(`🛡️  RateLimit: 30/min | CrashGuard: ON`);
     console.log(`=============================================\n`);
 });
