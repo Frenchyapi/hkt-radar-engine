@@ -162,8 +162,17 @@ async function processFlightData(allFlights, now, isGroundScan) {
             isStationaryAtGate = gateCheck.distance < gateCheck.radius;
         }
 
-        const isPhuketDeparture = (isGroundScan && flight.isOnGround) || (origin === "HKT") || (flight.isOnGround && destination !== "" && destination !== "HKT");
-        const isPhuketArrival = (destination === "HKT") || (isGroundScan && isWhitelisted && !isStationaryAtGate && !trackedDepartures.has(flight.id));
+        let isPhuketDeparture = (isGroundScan && flight.isOnGround) || (origin === "HKT") || (flight.isOnGround && destination !== "" && destination !== "HKT");
+        let isPhuketArrival = (destination === "HKT") || (isGroundScan && isWhitelisted && !isStationaryAtGate);
+        
+        // v9.4: Strict Stickiness (State Lock). Prevent hijacking!
+        if (trackedDepartures.has(flight.id)) {
+            isPhuketArrival = false;
+            isPhuketDeparture = true;
+        } else if (trackedArrivals.has(flight.id)) {
+            isPhuketDeparture = false;
+            isPhuketArrival = true;
+        }
         
         if (!isPhuketDeparture && !isPhuketArrival) continue;
         if (reportedArrivals.has(flight.id) || reportedDepartures.has(flight.id)) continue;
@@ -368,8 +377,8 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: fligh
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v9.3 — Ghost Landing Fix`);
+    console.log(`🛰️  HKT-Radar-Engine v9.4 — Strict Stickiness`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 30s`);
-    console.log(`🛡️  GhostSafe: 2.0 | GateFix: 1.1 | M12+AOBT: ON`);
+    console.log(`🛡️  GhostSafe: 2.0 | GateFix: 1.1 | StateLock: ON`);
     console.log(`=============================================\n`);
 });
