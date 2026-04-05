@@ -36,7 +36,6 @@ function getHktTime(input) {
 
 let flightDataCache = [];
 let lastFetchTime = null;
-let loopCounts = { GROUND: 0, APPROACH: 0 };
 
 // Persistence maps: flightId -> { data: {Callsign, IATA, ...}, expiry: timestamp }
 const recentEvents = new Map(); 
@@ -88,7 +87,6 @@ function getDistance(lat1, lon1, lat2, lon2) {
 
 async function pollGroup(zones, groupName) {
     try {
-        loopCounts[groupName]++;
         const now = new Date().getTime();
         const flightMap = new Map();
         
@@ -362,6 +360,16 @@ async function processFlightData(allFlights, now, isGroundScan) {
     } finally { releaseLock(); } // v9.1: Release processing lock
 }
 
+// v9.5: Memory Purge — Clear stale IDs every 3 days to prevent memory leak
+const MEMORY_PURGE_INTERVAL = 3 * 24 * 60 * 60 * 1000; // 3 days
+setInterval(() => {
+    const beforeA = reportedArrivals.size;
+    const beforeD = reportedDepartures.size;
+    reportedArrivals.clear();
+    reportedDepartures.clear();
+    console.log(`[${new Date().toISOString()}] 🧹 Memory Purge: Cleared ${beforeA} arrivals + ${beforeD} departures`);
+}, MEMORY_PURGE_INTERVAL);
+
 setInterval(() => pollGroup(APPROACH_ZONES, 'APPROACH'), APPROACH_INTERVAL);
 setInterval(() => pollGroup(GROUND_ZONES, 'GROUND'), GROUND_INTERVAL);
 
@@ -373,12 +381,19 @@ app.get('/api/external/flights', (req, res) => {
     if (req.headers['x-api-key'] !== 'hkt-apron-static-key') return res.status(401).json({ error: 'Unauthorized' });
     res.json(flightDataCache);
 });
-app.get('/api/health', (req, res) => res.json({ status: 'ok', cacheLength: flightDataCache.length, lastFetchTime, tracking: trackedArrivals.size + trackedDepartures.size }));
+app.get('/api/health', (req, res) => res.json({ 
+    status: 'ok', 
+    cacheLength: flightDataCache.length, 
+    lastFetchTime, 
+    tracking: trackedArrivals.size + trackedDepartures.size,
+    memoryArrivals: reportedArrivals.size,
+    memoryDepartures: reportedDepartures.size
+}));
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v9.4 — Strict Stickiness`);
+    console.log(`🛰️  HKT-Radar-Engine v9.5 — Hardening`);
     console.log(`🌐 Port ${PORT} | Apron: 15s | Approach: 30s`);
-    console.log(`🛡️  GhostSafe: 2.0 | GateFix: 1.1 | StateLock: ON`);
+    console.log(`🛡️  StateLock: ON | MemPurge: 3 days`);
     console.log(`=============================================\n`);
 });
