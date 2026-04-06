@@ -262,7 +262,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
                 }
             } else if (isPhuketDeparture) {
                 seenInThisPoll.add(flight.id);
-                if (!trackedDepartures.has(flight.id)) {
+                // v9.8: Speed Guard (Discovery). Ignore high-speed runway rolls for pushback tracking.
+                if (!trackedDepartures.has(flight.id) && (flight.speed < 30)) {
                     const standInfo = getStandInfo(flight.latitude, flight.longitude);
                     const lockedStand = (standInfo.distance < 100) || flight.isOnGround ? standInfo : null; 
                     trackedDepartures.set(flight.id, { callsign, iata, state: 'PARKED', aobt: null, lockedStand, lastSeen: fTimestamp, stallingCount: 0 });
@@ -283,7 +284,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
                     const isMovingNormal = (flight.speed >= 0.8 && displacement > AOBT_MOVEMENT_THRESHOLD);
                     const isMovingZeroSpeed = (displacement > AOBT_ZERO_SPEED_THRESHOLD); 
 
-                    if (flight.isOnGround && (isMovingFast || isMovingNormal || isMovingZeroSpeed)) {
+                    // v9.8: Speed Guard (Transition). A real pushback/initial taxi won't be > 30 knots.
+                    if (flight.isOnGround && (isMovingFast || isMovingNormal || isMovingZeroSpeed) && (flight.speed < 30)) {
                         info.stallingCount = (info.stallingCount || 0) + 1;
                         if (info.stallingCount >= AOBT_STABLE_REQUIRED || displacement > 40) {
                             info.state = 'TAXIING';
@@ -410,7 +412,7 @@ app.get('/api/external/flights', (req, res) => {
 });
 app.get('/api/health', (req, res) => res.json({ 
     status: 'ok', 
-    version: 'v9.6',
+    version: 'v9.8',
     uptime: Math.floor(process.uptime()) + 's',
     cacheLength: flightDataCache.length, 
     lastFetchTime, 
@@ -421,8 +423,8 @@ app.get('/api/health', (req, res) => res.json({
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v9.7 — GAS Sync & Ghost Buff`);
+    console.log(`🛰️  HKT-Radar-Engine v9.8 — Speed Guard`);
     console.log(`🌐 Port ${PORT} | Apron: 8s | Approach: 30s`);
-    console.log(`🛡️  EventTTL: 10m | GhostBuffer: 40m | M12+AOBT: ON`);
+    console.log(`🛡️  SpeedGuard: 30kts | StateLock: ON`);
     console.log(`=============================================\n`);
 });
