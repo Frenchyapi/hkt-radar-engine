@@ -212,6 +212,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
                     });
                 }
                 const info = trackedArrivals.get(flight.id);
+                if (!info) continue; // v9.8.1 Safety Guard
+
                 info.lastSeen = fTimestamp;
                 info.lastPos = { lat: flight.latitude, lon: flight.longitude, speed: flight.speed, ts: fTimestamp };
 
@@ -269,6 +271,7 @@ async function processFlightData(allFlights, now, isGroundScan) {
                     trackedDepartures.set(flight.id, { callsign, iata, state: 'PARKED', aobt: null, lockedStand, lastSeen: fTimestamp, stallingCount: 0 });
                 }
                 const info = trackedDepartures.get(flight.id);
+                if (!info) continue; // v9.8.1 Safety Guard
 
                 if (info.state === 'PARKED') {
                     const currentStand = getStandInfo(flight.latitude, flight.longitude);
@@ -412,7 +415,7 @@ app.get('/api/external/flights', (req, res) => {
 });
 app.get('/api/health', (req, res) => res.json({ 
     status: 'ok', 
-    version: 'v9.8',
+    version: 'v9.8.1',
     uptime: Math.floor(process.uptime()) + 's',
     cacheLength: flightDataCache.length, 
     lastFetchTime, 
@@ -423,8 +426,8 @@ app.get('/api/health', (req, res) => res.json({
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v9.8 — Speed Guard`);
+    console.log(`🛰️  HKT-Radar-Engine v9.8.1 — Safety Guard`);
     console.log(`🌐 Port ${PORT} | Apron: 8s | Approach: 30s`);
-    console.log(`🛡️  SpeedGuard: 30kts | StateLock: ON`);
+    console.log(`🛡️  SpeedGuard: 30kts | Safety: ON`);
     console.log(`=============================================\n`);
 });
