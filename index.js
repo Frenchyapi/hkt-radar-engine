@@ -273,7 +273,11 @@ async function processFlightData(allFlights, now, isGroundScan) {
                 if (!trackedDepartures.has(flight.id) && (flight.speed < 30)) {
                     const standInfo = getStandInfo(flight.latitude, flight.longitude);
                     const lockedStand = (standInfo.distance < 100) || flight.isOnGround ? standInfo : null; 
-                    trackedDepartures.set(flight.id, { callsign, iata, state: 'PARKED', aobt: null, lockedStand, lastSeen: fTimestamp, stallingCount: 0, firstAOBT: null });
+                    trackedDepartures.set(flight.id, { 
+                        callsign, iata, state: 'PARKED', aobt: null, lockedStand, 
+                        originLat: flight.latitude, originLon: flight.longitude, // v10.0 origin tracking
+                        lastSeen: fTimestamp, stallingCount: 0, firstAOBT: null 
+                    });
                 }
                 const info = trackedDepartures.get(flight.id);
                 if (!info) continue; // v9.8.1 Safety Guard
@@ -281,10 +285,12 @@ async function processFlightData(allFlights, now, isGroundScan) {
                 if (info.state === 'PARKED') {
                     const currentStand = getStandInfo(flight.latitude, flight.longitude);
                     let displacement = 0;
-                    if (info.lockedStand && info.lockedStand.lat) {
-                        displacement = getDistance(flight.latitude, flight.longitude, info.lockedStand.lat, info.lockedStand.lon);
+                    
+                    // v10.0: Relative Movement Tracking. Measure move distance from origin, not stand center.
+                    if (info.originLat && info.originLon) {
+                        displacement = getDistance(flight.latitude, flight.longitude, info.originLat, info.originLon);
                     } else {
-                        displacement = currentStand.distance; 
+                        displacement = (info.lockedStand) ? getDistance(flight.latitude, flight.longitude, info.lockedStand.lat, info.lockedStand.lon) : currentStand.distance;
                     }
 
                     // AOBT (v8.2-v8.7 Balance): Anti-Drift Thresholds
@@ -425,7 +431,7 @@ app.get('/api/external/flights', (req, res) => {
 });
 app.get('/api/health', (req, res) => res.json({ 
     status: 'ok', 
-    version: 'v9.9',
+    version: 'v10.0',
     uptime: Math.floor(process.uptime()) + 's',
     cacheLength: flightDataCache.length, 
     lastFetchTime, 
@@ -436,8 +442,8 @@ app.get('/api/health', (req, res) => res.json({
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v9.9 — Precision Back-dating`);
+    console.log(`🛰️  HKT-Radar-Engine v10.0 — Relative Move`);
     console.log(`🌐 Port ${PORT} | Apron: 8s | Approach: 30s`);
-    console.log(`🛡️  Harden: 45m/55m | Back-dating: ENABLED`);
+    console.log(`🛡️  RelativeTracking: ON | StandAssociation: Center`);
     console.log(`=============================================\n`);
 });
