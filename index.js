@@ -73,7 +73,7 @@ const trackedDepartures = new Map(); // id -> { callsign, iata, state, aobt, loc
 
 const APPROACH_INTERVAL = 30000;     
 const GROUND_INTERVAL = 8000;        
-const EVENT_PERSISTENCE_TTL = 5 * 60 * 1000; 
+const EVENT_PERSISTENCE_TTL = 10 * 60 * 1000; 
 const PURGE_THRESHOLD = 60 * 60 * 1000; // 1 hour: Clear inactive memory
 
 // v8.7 Dynamic Thresholds (Stability First)
@@ -362,7 +362,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
                  const lastPos = info.lastPos;
                  if (lastPos) {
                      const standInfo = getStandInfo(lastPos.lat, lastPos.lon);
-                     if (standInfo.distance < standInfo.radius && lastPos.speed < 5) {
+                     // v9.7: More lenient distance for Ghost Arrival (radius + 40m)
+                     if (standInfo.distance < (standInfo.radius + 40) && lastPos.speed < 5) {
                          const aibt = getHktTime(lastPos.ts);
                          const eventData = { Callsign: info.callsign, IATA: info.iata, ATA: info.ata, AIBT: aibt, Stand: standInfo.stand };
                          responseData.set(id, eventData);
@@ -420,8 +421,8 @@ app.get('/api/health', (req, res) => res.json({
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v9.6 — Production Armor`);
+    console.log(`🛰️  HKT-Radar-Engine v9.7 — GAS Sync & Ghost Buff`);
     console.log(`🌐 Port ${PORT} | Apron: 8s | Approach: 30s`);
-    console.log(`🛡️  RateLimit: 30/min | CrashGuard: ON`);
+    console.log(`🛡️  EventTTL: 10m | GhostBuffer: 40m | M12+AOBT: ON`);
     console.log(`=============================================\n`);
 });
