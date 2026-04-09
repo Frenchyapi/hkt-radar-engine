@@ -273,15 +273,18 @@ async function processFlightData(allFlights, now, isGroundScan) {
                 // v9.8: Speed Guard (Discovery). Ignore high-speed runway rolls for pushback tracking.
                 if (!trackedDepartures.has(flight.id) && (flight.speed < 30)) {
                     const standInfo = getStandInfo(flight.latitude, flight.longitude);
-                    // v10.2 Confidence Shield: Only lock to a stand if discovered nearly stationary and close to a gate.
-                    const isConfident = (standInfo.distance < 50) && (flight.speed < 5);
+                    // v10.4 Tuned Confidence Shield: 
+                    // 1. If right at the gate center (<30m): Allow higher jitter speed (12kts) — Fixes FD3159
+                    // 2. If intermediate (30-50m): Strict 5kts rule applies.
+                    const isConfident = (standInfo.distance < 30 && flight.speed < 12) || (standInfo.distance < 50 && flight.speed < 5);
                     
                     if (isConfident) {
                         trackedDepartures.set(flight.id, { 
                             callsign, iata, state: 'PARKED', aobt: null, 
                             lockedStand: standInfo, 
                             originLat: flight.latitude, originLon: flight.longitude, 
-                            lastSeen: fTimestamp, stallingCount: 0, firstAOBT: null 
+                            lastSeen: fTimestamp, stallingCount: 0, firstAOBT: null,
+                            firstMoveTS: null // v10.4 tracking
                         });
                     } else {
                         // Discovered mid-taxi or metadata late. Skip M11 (AOBT) for data integrity.
@@ -289,7 +292,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
                             callsign, iata, state: 'TAXIING', aobt: null, 
                             lockedStand: null, 
                             originLat: flight.latitude, originLon: flight.longitude, 
-                            lastSeen: fTimestamp, stallingCount: 0, firstAOBT: null 
+                            lastSeen: fTimestamp, stallingCount: 0, firstAOBT: null,
+                            firstMoveTS: null
                         });
                         console.log(`  [EVENT] ${callsign} discovered mid-taxi (${flight.speed}kts). Skipping AOBT tracking.`);
                     }
@@ -313,6 +317,13 @@ async function processFlightData(allFlights, now, isGroundScan) {
                     const isMovingNormal = (flight.speed >= 0.8 && displacement > AOBT_MOVEMENT_THRESHOLD);
                     const isMovingZeroSpeed = (displacement > AOBT_ZERO_SPEED_THRESHOLD); 
 
+                    // v10.4: Origin-Relative Precision Capturing
+                    if (displacement >= AOBT_MIN_DISPLACEMENT && !info.firstMoveTS) {
+                        info.firstMoveTS = fTimestamp; // Record the "First Step"
+                    } else if (displacement < 10) {
+                        info.firstMoveTS = null; // Snapback Reset (Jitter protection)
+                    }
+
                     // v9.8: Speed Guard (Transition). A real pushback/initial taxi won't be > 30 knots.
                     if (flight.isOnGround && (isMovingFast || isMovingNormal || isMovingZeroSpeed) && (flight.speed < 30)) {
                         info.stallingCount = (info.stallingCount || 0) + 1;
@@ -322,7 +333,8 @@ async function processFlightData(allFlights, now, isGroundScan) {
 
                         if (info.stallingCount >= AOBT_STABLE_REQUIRED || displacement > 60) {
                             info.state = 'TAXIING';
-                            const aobtTS = info.firstAOBT || fTimestamp;
+                            // v10.4: Triple Back-dating (Prioritize FirstStepTS > BackdateTS > CurrentTS)
+                            const aobtTS = info.firstMoveTS || info.firstAOBT || fTimestamp;
                             info.aobt = getHktTime(aobtTS);
                             const standNr = info.lockedStand ? info.lockedStand.stand : currentStand.stand;
                             const eventData = { Callsign: callsign, IATA: iata, AOBT: info.aobt, Stand: standNr };
@@ -447,7 +459,7 @@ app.get('/api/external/flights', (req, res) => {
 });
 app.get('/api/health', (req, res) => res.json({ 
     status: 'ok', 
-    version: 'v10.3',
+    version: 'v10.4',
     uptime: Math.floor(process.uptime()) + 's',
     cacheLength: flightDataCache.length, 
     lastFetchTime, 
@@ -458,8 +470,8 @@ app.get('/api/health', (req, res) => res.json({
 
 app.listen(PORT, () => {
     console.log(`\n=============================================`);
-    console.log(`🛰️  HKT-Radar-Engine v10.3 — Precision Tuning`);
+    console.log(`🛰️  HKT-Radar-Engine v10.4 — The First Step`);
     console.log(`🌐 Port ${PORT} | Apron: 8s | Approach: 30s`);
-    console.log(`🛡️  GhostBuffer: Tight | RadiusLock: 80m (A/D)`);
+    console.log(`🛡️  Precision: 15m (Back-date) | Jitter: Tuned`);
     console.log(`=============================================\n`);
 });
